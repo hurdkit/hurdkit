@@ -47,10 +47,11 @@ The acceptance criteria for a finished image are:
 - Tools available: `qemu-img` / `qemu-system-x86_64` 10.2.3, `wget`, `tar`, `xz`,
   `python3` 3.14 with the module `pexpect` 4.9, `ssh`, `md5sum`, `debugfs` 1.47.4,
   `dumpe2fs`, `e2fsck`, `sfdisk`, `parted`, `fuse2fs`, `fusermount`, `openssl`,
-  `flock`, `jq`.
+  `flock`, `qemu-nbd`, `nbdfuse`.
 - Tool **not** available: `sudo`, `nbd`, `guestfish`, `virt-customize`, `socat`,
-  `sshpass`. There is no root access, so loop mounts and libguestfs are out; the
-  offline write path is `partitionfs` + `debugfs`.
+  `sshpass`, `jq` (the repair script therefore parses the plain `qemu-img info`
+  output instead of its JSON output). There is no root access, so loop mounts
+  and libguestfs are out; the offline write path is `partitionfs` + `debugfs`.
 - `partitionfs` (FUSE, exposes the partitions of a disk image as files) is
   built from the pinned checkout in `3p/partitionfs` with `make partitionfs-build`
   and lands at `3p/partitionfs/build/partitionfs`; the path is overridable
@@ -82,9 +83,13 @@ image out of date and re-extract it on every invocation.
 `prepare_base.sh <source.raw> <work.raw> [root_password]` never touches the
 downloaded image. It copies it to `img/hurd.work.img` and edits the copy:
 
-1. `cp` the raw image, then `sync "$WORK_IMG"`. This is mandatory: `partitionfs`
-   probes the image through the block layer, which ignores the page cache, so an
-   unflushed copy looks like it has no partition table.
+1. `cp --reflink=never` the raw image, then `sync "$WORK_IMG"`. Both details
+   are mandatory: `partitionfs` probes the image through the block layer,
+   which ignores the page cache, so an unflushed copy looks like it has no
+   partition table; and on filesystems with clone support (btrfs, XFS) a
+   default `cp` creates a reflink whose freshly cloned extents read back
+   inconsistently, which makes the `debugfs` dumps of this stage fail
+   nondeterministically (see pitfall 41).
 2. Mount the copy with `partitionfs` in a fresh `mktemp -d` directory; the root
    filesystem is then the file `<mountdir>/2`.
 3. Apply the offline edits with `debugfs -w`:
@@ -107,7 +112,10 @@ The patched configuration and the kernel it refers to are checked before the
 file is written into the image, and the patched `/etc/shadow` is checked as
 well: the number of accounts, the number of fields per line and the new
 hashes are verified, because a malformed shadow file breaks the login of
-every user without any obvious error.
+every user without any obvious error. The dumps that these checks are based
+on are verified as well: `debugfs` exits 0 even when a dump fails, so a
+helper checks the exit status and that the dumped file exists and is not
+empty, and fails with an error that names the file (see pitfall 42).
 
 The GRUB configuration that makes the image boot unattended is the
 configuration of the image with three changes:
@@ -164,8 +172,11 @@ base image and only replaces the base when everything succeeded:
      home directory (see pitfalls 36 and 37), and give the renamed account
      the configured password,
    - generate the SSH key of `root` and of `peon` on the host, if the pair does
-     not exist yet, and install the public key of each account in the guest,
-   - check that the login with the key of every account works,
+     not exist yet, install the public key of each account in the guest, and
+     verify that the key really landed in the `authorized_keys` of the account,
+   - check that the login with the key of every account works; the check
+     offers only the key of the account (`IdentitiesOnly=yes`), because ssh
+     otherwise offers the keys of a loaded agent first (see pitfall 43),
    - if `/root/.provisioned` exists, stop here ("Image is already provisioned."),
    - otherwise run `apt-get update` and `apt-get upgrade` **only** when
      `RUN_APT_UPGRADE=1` is set, and create the marker,
@@ -245,16 +256,19 @@ account in the guest. The directory has the mode 700, the file the mode 600,
 and both belong to the account, because sshd refuses the key otherwise
 (`StrictModes`).
 
-Login with a key:
+Login with a key (`IdentitiesOnly=yes` matters: ssh otherwise offers the keys
+of a loaded agent first, and sshd drops the connection after six rejected
+attempts - see pitfall 43):
 
 ```
-ssh -i img/keys/root_ed25519 -p 2222 root@127.0.0.1
-ssh -i img/keys/peon_ed25519 -p 2222 peon@127.0.0.1
+ssh -o IdentitiesOnly=yes -i img/keys/root_ed25519 -p 2222 root@127.0.0.1
+ssh -o IdentitiesOnly=yes -i img/keys/peon_ed25519 -p 2222 peon@127.0.0.1
 ```
 
-`make ssh` and `make ssh-peon` do the same and fall back to the password when
-the key does not exist. The password of the accounts keeps working; the keys
-are an addition, not a replacement.
+`make ssh` and `make ssh-peon` do the same (they pass `IdentitiesOnly=yes`
+when the key exists) and fall back to the password when the key does not
+exist. The password of the accounts keeps working; the keys are an addition,
+not a replacement.
 
 ### Offline filesystem repair (`scripts/repair_filesystem.sh`)
 
@@ -274,8 +288,9 @@ e2fsck -fy <partdir>/2                        # repair through the chain
 
 `nbdfuse` is the FUSE client of libnbd; it speaks the NBD protocol in
 userspace and needs neither the kernel NBD module nor root privileges. Only
-`/dev/fuse` is required. The image format is taken from `qemu-img info`, so
-the same script works for raw and qcow2 images.
+`/dev/fuse` is required. The image format is parsed from the plain output of
+`qemu-img info` with `sed`, so the script needs no `jq` and the same script
+works for raw and qcow2 images.
 
 The repair needs the image not to be in use elsewhere, because `qemu-nbd`
 takes an exclusive lock on it. The provisioning works on a private copy of
@@ -564,6 +579,34 @@ Every one of these was hit while building this pipeline.
     it, because the password of the account is set after the rename, in the
     guest.
 
+41. **A reflinked copy of the image reads back corrupt.** On filesystems with
+    clone support (btrfs, XFS), `cp` defaults to `--reflink=auto`: the 4 GB
+    "copy" of the raw image takes a millisecond and shares its data extents
+    with the source. Reading a freshly cloned image through `partitionfs`
+    then intermittently returns inconsistent data, and `debugfs` fails with
+    a bogus "Ext2 inode is not a directory" (three failures out of five in a
+    retry test), which broke the preparation nondeterministically. The
+    `sync` afterwards does not help: a reflink has no dirty data to flush.
+    Fix: `cp --reflink=never`; a real copy costs a few seconds and is
+    reliable.
+
+42. **A failed `debugfs dump` fails silently.** `debugfs` exits 0 even when
+    the dump fails, and its diagnostics go to stderr. The preparation
+    discarded stderr, so a failed dump of `/boot/grub/grub.cfg` surfaced
+    much later as a cryptic awk error about the missing `grub.cfg.orig`
+    file. Fix: the dumps run through a helper that checks the exit status
+    and that the dumped file exists and is not empty, and that fails with an
+    error that names the file.
+
+43. **`ssh -i` still offers the keys of the agent.** ssh tries the keys of a
+    loaded agent before the identity given with `-i`; with six keys in the
+    agent, the authentication attempt limit of sshd (default 6) is exhausted
+    before the right key is offered, and the connection is dropped with
+    "Too many authentication failures" even though the key itself is
+    installed in the guest. Fix: `-o IdentitiesOnly=yes` next to `-i`, in
+    the key login check of the provisioning and in `make ssh` /
+    `make ssh-peon`.
+
 ## Known issue: ext2 without a journal
 
 The root filesystem of the Hurd image is ext2 **without a journal**. The guest
@@ -722,9 +765,9 @@ python3 -c 'import pexpect; c = pexpect.spawn("ssh", ["-o", "StrictHostKeyChecki
 Check the login with the keys (the guest has to be running):
 
 ```
-ssh -i img/keys/root_ed25519 -o StrictHostKeyChecking=no \
+ssh -o IdentitiesOnly=yes -i img/keys/root_ed25519 -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -p 2222 root@127.0.0.1 id
-ssh -i img/keys/peon_ed25519 -o StrictHostKeyChecking=no \
+ssh -o IdentitiesOnly=yes -i img/keys/peon_ed25519 -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -p 2222 peon@127.0.0.1 id
 ```
 
