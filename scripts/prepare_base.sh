@@ -99,7 +99,14 @@ SSHDCONF
 
 # Work on a copy: the downloaded image must stay pristine so that the
 # preparation can be repeated from a known state.
-cp "$SRC_IMG" "$WORK_IMG"
+#
+# --reflink=never is required on filesystems that support clone requests
+# (btrfs, XFS): cp defaults to --reflink=auto there, and reading a
+# reflinked image right after the clone intermittently returns inconsistent
+# data, which made debugfs fail with a bogus "Ext2 inode is not a directory"
+# and broke the dumps below nondeterministically. A real copy costs a few
+# seconds but is reliable.
+cp --reflink=never "$SRC_IMG" "$WORK_IMG"
 # libparted probes the image through the block layer, which ignores the
 # page cache; without flushing the copy the partition table reads back empty
 # and partitionfs exposes no partitions.
@@ -124,6 +131,19 @@ fi
 
 PART_FILE="$WORK_DIR/2"
 
+# Dump a file out of the image. debugfs returns exit status 0 even when the
+# dump fails, and its diagnostics go to stderr, so a failed dump used to
+# surface much later as a cryptic awk error about the missing output file.
+# The dump result is therefore verified right here.
+debugfs_dump() {
+    local path="$1" out="$2"
+    rm -f "$out"
+    if ! debugfs -R "dump $path $out" "$PART_FILE" 2>/dev/null || [[ ! -s "$out" ]]; then
+        echo "Failed to dump $path from the image (debugfs failed or produced an empty file)" >&2
+        return 1
+    fi
+}
+
 # --- Patch the GRUB configuration of the image ---
 # The shipped grub.cfg is patched instead of replaced: it knows the kernel
 # file, the translator modules and the filesystem UUID of the image, and
@@ -135,7 +155,7 @@ PART_FILE="$WORK_DIR/2"
 #   * the menu timeout becomes 0, so that the guest boots unattended,
 #   * the GRUB output goes to the console instead of the graphics console,
 #   * the Hurd console is put on the serial line.
-debugfs -R "dump /boot/grub/grub.cfg $TMP_DIR/grub.cfg.orig" "$PART_FILE" 2>/dev/null
+debugfs_dump /boot/grub/grub.cfg "$TMP_DIR/grub.cfg.orig"
 
 awk '
     /^terminal_output gfxterm$/ { print "terminal_output console"; next }
@@ -186,7 +206,7 @@ echo "Using kernel $KERNEL_PATH"
 # that the provisioning logs in with. The account of the image is renamed
 # during the provisioning, and its password is set there, after the
 # rename.
-debugfs -R "dump /etc/shadow $TMP_DIR/shadow.orig" "$PART_FILE" 2>/dev/null
+debugfs_dump /etc/shadow "$TMP_DIR/shadow.orig"
 
 awk -F: -v OFS=: -v root_hash="$ROOT_HASH" '
     $1 == "root" { $2 = root_hash }
