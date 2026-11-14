@@ -36,7 +36,7 @@ if [[ ! -f "$IMG" ]]; then
     exit 1
 fi
 
-for tool in qemu-nbd nbdfuse e2fsck qemu-img jq; do
+for tool in qemu-nbd nbdfuse e2fsck qemu-img; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "$tool is required to repair the filesystem" >&2
         exit 1
@@ -49,7 +49,13 @@ if [[ ! -x "$PARTFS" ]]; then
 fi
 
 # The image format is needed for qemu-nbd; the file name gives no hint.
-IMAGE_FORMAT="$(qemu-img info --output=json "$IMG" | jq -r '.format')"
+# The format is parsed from the plain output instead of the JSON output,
+# so that the script does not need jq.
+IMAGE_FORMAT="$(qemu-img info "$IMG" | sed -n 's/^file format: \(.*\)$/\1/p')"
+if [[ -z "$IMAGE_FORMAT" ]]; then
+    echo "Could not determine the format of $IMG" >&2
+    exit 1
+fi
 
 TMP_DIR="$(mktemp -d)"
 MNT_DIR="$TMP_DIR/mnt"

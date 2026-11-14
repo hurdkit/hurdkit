@@ -463,6 +463,16 @@ def install_authorized_key(session, account, home, public_key_path):
         f"chown -R {account}:{account} {home}/.ssh",
         f"authorized_key_{account}",
     )
+    # An install that failed in the guest has to fail the provisioning here:
+    # the key login check below would otherwise report an indirect error.
+    status = session.run_command(
+        f"grep -qxF '{key}' {home}/.ssh/authorized_keys", f"authorized_key_{account}_check"
+    )
+    if status != 0:
+        raise GuestError(
+            f"The authorized key of {account} was not installed in the guest "
+            f"(see /tmp/provision_authorized_key_{account}.log)"
+        )
 
 
 def install_authorized_keys(session, key_dir):
@@ -495,6 +505,12 @@ def verify_key_login(host, port, account, private_key):
             "BatchMode=yes",
             "-o",
             "PasswordAuthentication=no",
+            # Only offer the given key: ssh otherwise tries the keys of the
+            # agent first, and a loaded agent exhausts the authentication
+            # attempt limit of sshd (default 6) before the right key is even
+            # offered ("Too many authentication failures").
+            "-o",
+            "IdentitiesOnly=yes",
             "-p",
             str(port),
             f"{account}@{host}",

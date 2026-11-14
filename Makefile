@@ -145,7 +145,7 @@ run-nokvm: $(BASE_IMG)
 ssh:
 	@KEY=""; \
 	if [ -f "$(SSH_KEY_DIR)/root_ed25519" ]; then \
-		KEY="-i $(SSH_KEY_DIR)/root_ed25519"; \
+		KEY="-i $(SSH_KEY_DIR)/root_ed25519 -o IdentitiesOnly=yes"; \
 	fi; \
 	ssh $$KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $(SSH_PORT) root@$(SSH_HOST)
 
@@ -153,7 +153,7 @@ ssh:
 ssh-peon:
 	@KEY=""; \
 	if [ -f "$(SSH_KEY_DIR)/peon_ed25519" ]; then \
-		KEY="-i $(SSH_KEY_DIR)/peon_ed25519"; \
+		KEY="-i $(SSH_KEY_DIR)/peon_ed25519 -o IdentitiesOnly=yes"; \
 	fi; \
 	ssh $$KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $(SSH_PORT) peon@$(SSH_HOST)
 
