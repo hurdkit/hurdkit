@@ -23,24 +23,11 @@ GCC_VER      := 15.3.0
 # stuff/crosscompile_plan.md, "3p source pins"). The shared 3p checkout is
 # mounted read-only by the docker backend, so the pin is applied on the host
 # before either backend builds. The 9pfs pin is pristine upstream master.
-# partitionfs is an image-pipeline tool (not used by the toolchain itself),
-# pinned here so the same checkout policy covers everything under 3p/.
-# libpciaccess is pinned to the upstream X.Org master commit that adds the
-# GNU/Hurd build fix; it is fetched from the upstream GitLab repository
-# because the GitHub mirror stops before that commit (see 3P_PIN_REMOTES).
-3P_PINS := mig:cb48044b30fcfe10529ecc1129dd68e93ed73835 \
-           glibc:03628c2f85acaab6ef71c37c954fd0707685e0f0 \
-           gnumach:12a3efa846b574070f90aa0c22c3f3e67cca10c4 \
-           hurd:9b556c6ad91197125bff8261462f51b024ad8e00 \
-           9pfs:b5b23deb1df6eb383fd2c0f5271c068861b745a8 \
-           partitionfs:1da79f0d12383dab960ca9b2a5b60f4ee738a2a2 \
-           libpciaccess:e33aa5fd28f63b9842e36c1a8a954577eec042e3
-
-# Where the pinned commit of a repo is fetched from, when it is not reachable
-# in the checkout's 'origin'. The GitHub mirror of libpciaccess lags upstream
-# X.Org master and does not contain the GNU/Hurd fix, so its pinned commit is
-# fetched directly from the upstream repository.
-3P_PIN_REMOTES := libpciaccess:https://gitlab.freedesktop.org/xorg/lib/libpciaccess.git
+# The 3p source URLs and verified pins live in toolchain/pins.mk, shared
+# with the top-level Makefile (image pipeline). The partitionfs pin there
+# covers the image-pipeline checkout; the remaining pins cover the cross
+# toolchain.
+include pins.mk
 
 # Pin the 3p repos to the verified SHAs. No-op when already pinned. Refuses
 # to proceed if a repo has uncommitted changes (it may be shared with other

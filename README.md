@@ -20,7 +20,7 @@ Host tools: `make`, `wget`, `tar`, `xz`, `qemu-img`, `qemu-system-x86_64`, `floc
 
 Toolchain builds download `binutils` and `gcc` source tarballs from ftp.gnu.org and install into `$HOME/opt/x86_64-gnu` (build artifacts under `$HOME/work/x86_64-gnu-*`).
 
-The 3p source checkouts (`mig`, `gnumach`, `glibc`, `hurd`, `9pfs`, `partitionfs`, `libpciaccess`) are cloned into `3p/` on first use and pinned to verified commits. `make toolchain` runs `fetch-3p` automatically; `make -C toolchain ...` assumes `3p/` is already present.
+The 3p source checkouts (`mig`, `gnumach`, `glibc`, `hurd`, `9pfs`, `partitionfs`, `libpciaccess`) are pinned to verified commits. Only `partitionfs` is needed for the image pipeline (`make base` fetches and builds just that checkout); the remaining checkouts are fetched by `make toolchain` via `fetch-3p`. `make -C toolchain ...` assumes `3p/` is already present.
 
 ## Main targets
 
@@ -32,7 +32,7 @@ The 3p source checkouts (`mig`, `gnumach`, `glibc`, `hurd`, `9pfs`, `partitionfs
 | `make ssh` / `make ssh-peon` | SSH into the running VM (port 2222) |
 | `make toolchain` | Build the x86_64-gnu cross toolchain |
 | `make toolchain-docker` | Same via Docker |
-| `make partitionfs-build` | Build the partitionfs FUSE tool |
+| `make partitionfs-build` | Build the partitionfs FUSE tool (fetches only the partitionfs 3p checkout) |
 | `make fetch-3p` | Clone missing 3p source checkouts |
 | `make clean` / `make distclean` | Remove temporaries / all generated files |
 

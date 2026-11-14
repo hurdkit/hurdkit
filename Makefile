@@ -165,13 +165,7 @@ ssh-peon:
 # exact commits used for the verified build (via toolchain/Makefile).
 # The URLs match the verified checkouts.
 3P_DIR   ?= 3p
-3P_REPOS := mig:https://git.savannah.gnu.org/git/hurd/mig.git \
-            gnumach:https://git.savannah.gnu.org/git/hurd/gnumach.git \
-            glibc:https://sourceware.org/git/glibc.git \
-            hurd:https://github.com/joshumax/hurd.git \
-            9pfs:https://github.com/bugaevc/9pfs.git \
-            partitionfs:https://github.com/madscientist42/partitionfs.git \
-            libpciaccess:https://gitlab.freedesktop.org/xorg/lib/libpciaccess.git
+include toolchain/pins.mk
 PARTITIONFS_DIR := $(3P_DIR)/partitionfs
 PARTITIONFS     := $(PARTITIONFS_DIR)/build/partitionfs
 
@@ -201,12 +195,45 @@ fetch-3p:
 		echo "fetch-3p: non-default 3P_DIR; pin the tree manually with 'make -C toolchain 3p-pin' after pointing 3p at it"; \
 	fi
 
+# Clone and pin only the partitionfs checkout: enough to build the base
+# image. The rest of the 3p tree is fetched by fetch-3p (toolchain targets).
+fetch-partitionfs:
+	@set -e; \
+	if [ -L $(3P_DIR) ] && [ ! -d $(3P_DIR) ]; then \
+		echo "fetch-partitionfs: $(3P_DIR) is a dangling symlink; point it at the 3p checkout"; \
+		exit 1; \
+	fi; \
+	if [ ! -e $(3P_DIR) ]; then mkdir $(3P_DIR); fi; \
+	if [ ! -d $(3P_DIR) ]; then echo "fetch-partitionfs: $(3P_DIR) exists and is not a directory"; exit 1; fi; \
+	if [ ! -d $(3P_DIR)/partitionfs/.git ]; then \
+		echo "fetch-partitionfs: cloning $(PARTITIONFS_URL) into $(3P_DIR)/partitionfs"; \
+		git clone $(PARTITIONFS_URL) $(3P_DIR)/partitionfs; \
+	fi; \
+	if ! git -C $(3P_DIR)/partitionfs cat-file -e $(PARTITIONFS_PIN)^{commit} 2>/dev/null; then \
+		echo "fetch-partitionfs: pinned commit $(PARTITIONFS_PIN) not present locally; fetching from origin"; \
+		git -C $(3P_DIR)/partitionfs fetch origin $(PARTITIONFS_PIN) || { \
+			echo "fetch-partitionfs: fetch failed for partitionfs; restore the pinned 3p checkout"; \
+			exit 1; \
+		}; \
+	fi; \
+	if ! git -C $(3P_DIR)/partitionfs diff --quiet || ! git -C $(3P_DIR)/partitionfs diff --cached --quiet; then \
+		echo "fetch-partitionfs: partitionfs has uncommitted changes; commit or stash them before pinning"; \
+		exit 1; \
+	fi; \
+	cur=$$(git -C $(3P_DIR)/partitionfs rev-parse HEAD); \
+	if [ "$$cur" = "$(PARTITIONFS_PIN)" ]; then \
+		echo "fetch-partitionfs: partitionfs already at pinned commit $(PARTITIONFS_PIN)"; \
+	else \
+		echo "fetch-partitionfs: partitionfs $$cur -> $(PARTITIONFS_PIN) (detached HEAD)"; \
+		git -C $(3P_DIR)/partitionfs checkout --detach $(PARTITIONFS_PIN); \
+	fi
+
 # Build the partitionfs FUSE filesystem from the pinned 3p checkout. The
 # image provisioning scripts expose the partitions of the disk image as
 # plain files through it (prepare_base.sh, repair_filesystem.sh); they
 # default to this binary. It is a host tool, not built with the Hurd
 # toolchain.
-partitionfs-build: fetch-3p
+partitionfs-build: fetch-partitionfs
 	@command -v cmake >/dev/null || { echo "partitionfs-build: cmake is required" >&2; exit 1; }
 	@pkg-config --exists fuse || { echo "partitionfs-build: FUSE development files not found (pkg-config fuse; install e.g. libfuse-dev)" >&2; exit 1; }
 	@pkg-config --exists libparted || { echo "partitionfs-build: libparted development files not found (pkg-config libparted; install e.g. libparted-dev)" >&2; exit 1; }
