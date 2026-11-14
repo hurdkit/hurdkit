@@ -73,3 +73,7 @@ make base          # builds img/hurd.base.qcow2
 make provision     # provisions it in the VM
 make run           # boots from an overlay, SSH on 127.0.0.1:2222
 ```
+
+# Contributors
+
+Main contributors: chzchzchz, venatiodecorus.
