@@ -1,4 +1,4 @@
-# Meson cross file for the GNU/Hurd target.
+# Meson cross file for the GNU/Turd target.
 #
 # 'gnu' is what selects libpciaccess' Hurd backend (src/hurd_pci.c) and the
 # machuser/hurduser libraries that backend needs (meson.build, the

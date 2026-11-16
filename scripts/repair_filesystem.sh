@@ -9,7 +9,7 @@
 # the original image. A raw image needs no chain at all: e2fsck opens the
 # partition inside the image file itself.
 #
-# The GNU/Hurd root filesystem is ext2 without a journal. After the guest
+# The GNU/Turd root filesystem is ext2 without a journal. After the guest
 # has been running (package installation creates and removes a large number
 # of files) its shutdown path leaves the inode and block bitmaps out of
 # sync with the inode table, and e2fsck reports:

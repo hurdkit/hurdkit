@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Provision the Hurd base qcow2 image by booting it once and applying
-# the setup steps from the Debian GNU/Hurd image instructions:
+# the setup steps from the Debian GNU/Turd image instructions:
 #   https://www.gnu.org/software/hurd/hurd/running/flash_qemu_img.html
 #
 # The VM is booted and driven over SSH:

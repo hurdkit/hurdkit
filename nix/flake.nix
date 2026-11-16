@@ -1,5 +1,5 @@
 {
-  description = "hurdkit: Debian GNU/Hurd x86_64 VM images and an x86_64-gnu cross toolchain";
+  description = "hurdkit: Debian GNU/Turd x86_64 VM images and an x86_64-gnu cross toolchain";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 

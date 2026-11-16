@@ -270,7 +270,7 @@ hurd: mig glibc
 	@echo "=== gate: hurd libraries ==="
 	ls $(PREFIX)/lib/libshouldbeinlibc.so $(PREFIX)/include/hurd/io.h >/dev/null
 
-# libpciaccess is built with meson, not autotools. The GNU/Hurd backend is
+# libpciaccess is built with meson, not autotools. The GNU/Turd backend is
 # selected by the cross file's system = 'gnu'; the pinned upstream commit
 # (e33aa5fd) adds the machuser/hurduser libraries that backend needs.
 # zlib is disabled: the translator does not read compressed pci.ids, and the

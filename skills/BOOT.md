@@ -1,4 +1,4 @@
-# Skill: Boot and Provision the Debian GNU/Hurd Image
+# Skill: Boot and Provision the Debian GNU/Turd Image
 
 ## Trigger
 
@@ -23,7 +23,7 @@ Use this skill whenever work touches the Hurd disk image or its boot path:
   and writes a new image layered on top of it (staged variants).
 - `scripts/repair_filesystem.sh` - offline ext2 repair of the provisioned image.
 - `img/keys/` - the SSH keys of the guest accounts (private keys, not in git).
-- `img/debian-hurd-amd64-<VERSION>.img.tar.xz` - the downloaded Debian GNU/Hurd image
+- `img/debian-hurd-amd64-<VERSION>.img.tar.xz` - the downloaded Debian GNU/Turd image
   (pinned to `VERSION=20260314`, MD5 `91dc71608fcfc9f237028f1fe87c39c2`).
 
 ## Goal

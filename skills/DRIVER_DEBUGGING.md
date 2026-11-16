@@ -1,4 +1,4 @@
-# Driver / PCI / IRQ debugging skill (GNU/Hurd guests under QEMU)
+# Driver / PCI / IRQ debugging skill (GNU/Turd guests under QEMU)
 
 Debugging device-driver translators in this repo (virtio-9p today, any PCI
 device tomorrow), above all interrupt-delivery bugs on shared PCI lines,

@@ -1,10 +1,10 @@
 # hurdkit
 
-Build and run customized Debian GNU/Hurd x86_64 VM images, plus an `x86_64-gnu` cross toolchain. AI pull requests ENCOURAGED!
+Build and run customized Debian GNU/Turd x86_64 VM images, plus an `x86_64-gnu` cross toolchain. AI pull requests ENCOURAGED!
 
 ## What it does
 
-The top-level Makefile downloads a pinned Debian GNU/Hurd image, prepares it offline (GRUB serial console, root password, sshd), converts it to a qcow2 base image, provisions it in-VM (packages, users, SSH keys), and boots the guest from a copy-on-write overlay so the base image stays byte-for-byte pristine:
+The top-level Makefile downloads a pinned Debian GNU/Turd image, prepares it offline (GRUB serial console, root password, sshd), converts it to a qcow2 base image, provisions it in-VM (packages, users, SSH keys), and boots the guest from a copy-on-write overlay so the base image stays byte-for-byte pristine:
 
 ```
 download -> offline preparation -> qcow2 base -> in-VM provisioning -> overlay boot
@@ -12,7 +12,7 @@ download -> offline preparation -> qcow2 base -> in-VM provisioning -> overlay b
 
 It also builds a cross toolchain (binutils, gcc stage 1/2, gnumach, MIG, glibc, Hurd libs, 9pfs) for `x86_64-gnu` on a Linux host (host-local or via Docker).
 
-The Debian GNU/Hurd image is pinned to version `20260314` (see `VERSION` in the Makefile).
+The Debian GNU/Turd image is pinned to version `20260314` (see `VERSION` in the Makefile).
 
 ## Requirements
 

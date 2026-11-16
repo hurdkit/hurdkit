@@ -1,4 +1,4 @@
-# x86_64-gnu cross toolchain for GNU/Hurd
+# x86_64-gnu cross toolchain for GNU/Turd
 
 Builds a cross toolchain (binutils, gcc, glibc, MIG, Hurd libs) for
 `x86_64-gnu` on a Linux host, plus the `9pfs` translator used to verify the
@@ -10,7 +10,7 @@ toolchain under the Hurd VM. Full recipe: `stuff/crosscompile_plan.md`.
 |---|---|
 | `Dockerfile.hurd-x86_64-gnu` | Single-stage Docker builder (debian:trixie) |
 | `Makefile` | Orchestrates both backends behind one UX |
-| `cross-gnu.ini.in` | Meson cross-file template for the GNU/Hurd target (`@PREFIX@` substituted at build time) |
+| `cross-gnu.ini.in` | Meson cross-file template for the GNU/Turd target (`@PREFIX@` substituted at build time) |
 | `9p-server.py` | Optional python 9P2000.L server for the V5 mount test |
 | `.dockerignore` | Keeps the Docker build context to this directory only |
 
@@ -21,7 +21,7 @@ Host-local (default):
 ```sh
 make -C toolchain toolchain          # stages 0–8: fetch … 9pfs
 make -C toolchain 9pfs               # build just the verification ELF
-make -C toolchain libpciaccess       # cross-build libpciaccess (GNU/Hurd target)
+make -C toolchain libpciaccess       # cross-build libpciaccess (GNU/Turd target)
 make -C toolchain verify-vm          # V2–V4 against the Hurd VM
 ```
 

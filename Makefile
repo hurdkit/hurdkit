@@ -1,4 +1,4 @@
-# Fetch, convert, and boot a Debian GNU/Hurd x86_64 image via QEMU.
+# Fetch, convert, and boot a Debian GNU/Turd x86_64 image via QEMU.
 #
 # The downloaded image is stored in img/ and is never deleted.
 # A pristine qcow2 base disk is created from it (after offline

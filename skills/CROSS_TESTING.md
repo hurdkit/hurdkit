@@ -4,7 +4,7 @@
 
 Use this skill when you have cross-compiled a Hurd driver (a translator,
 server, or any user-space program) for `x86_64-gnu` on the Linux host and
-want to prove it runs correctly inside the Debian GNU/Hurd guest:
+want to prove it runs correctly inside the Debian GNU/Turd guest:
 
 - a new binary appears after `make -C toolchain <target>`,
 - you changed driver source and want to re-verify under the real Hurd kernel,
@@ -37,7 +37,7 @@ toolchain — see `toolchain/Makefile` and `toolchain/README.md` for that.
 
 A cross-compiled Hurd driver binary is verified to:
 
-1. be a real `x86_64` ELF "for GNU/Hurd" (`file` / `readelf`),
+1. be a real `x86_64` ELF "for GNU/Turd" (`file` / `readelf`),
 2. execute inside the Hurd guest without crashing on startup,
 3. perform its real work end-to-end (for a filesystem translator: mount a
    host directory into the guest and exercise it; for other drivers: run
@@ -66,7 +66,7 @@ The driver must be built against the Hurd libraries installed in
 already passes the needed `LIBS`, `MIG`, and other variables; do not
 hand-edit `3p/<driver>` — any changes needed belong in `toolchain/Makefile`.
 
-Gate: `file 3p/<driver>/<binary>` reports `ELF ... for GNU/Hurd`.
+Gate: `file 3p/<driver>/<binary>` reports `ELF ... for GNU/Turd`.
 
 For 9pfs specifically, `make -C toolchain verify-vm` automates Steps 3–4
 (ELF check, copy into the VM, `--version` / `--help` smoke test) — it builds
@@ -111,7 +111,7 @@ ssh -i img/keys/root_ed25519 -p 2222 root@127.0.0.1 \
 
 The `file` output inside the guest must match what `file` reported on the
 host — same ELF class, same interpreter `/lib/ld-x86-64.so.1`, same
-"for GNU/Hurd" note.
+"for GNU/Turd" note.
 
 ### Step 4 — Smoke test
 
@@ -194,7 +194,7 @@ source (for example `toolchain/9pfs-verification.md`), in a table like:
 
 | Step | Command | Result |
 |---|---|---|
-| Host ELF | `file 3p/9pfs/9pfs` | `ELF ... for GNU/Hurd 0.0.0` |
+| Host ELF | `file 3p/9pfs/9pfs` | `ELF ... for GNU/Turd 0.0.0` |
 | Guest ELF | `ssh ... 'file /tmp/9pfs'` | identical to host |
 | Smoke test | `ssh ... '/tmp/9pfs --version'` | `9pfs 0.1.0`, exit 0 |
 | Mount test | `ssh ... 'settrans -c /host ...'` | host files visible in guest |
@@ -206,7 +206,7 @@ changes, translator lifetime behavior).
 
 | Check | Command | Expected |
 |---|---|---|
-| Host ELF format | `file 3p/<driver>/<binary>` | `ELF 64-bit ... for GNU/Hurd 0.0.0` |
+| Host ELF format | `file 3p/<driver>/<binary>` | `ELF 64-bit ... for GNU/Turd 0.0.0` |
 | Guest ELF format | `ssh ... 'file /tmp/<binary>'` | identical to host output |
 | Driver runs | `ssh ... "/tmp/<binary> --version"` | prints version, exit 0 |
 | End-to-end works | driver-specific (mount or real args) | driver performs its real work, exit 0 |
