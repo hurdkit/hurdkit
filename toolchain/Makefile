@@ -244,16 +244,21 @@ glibc: gnumach mig hurd-headers
 # stuff/crosscompile_plan.md), so the target tools, libraries and headers
 # resolve through the $(PREFIX)/x86_64-gnu tooldir. binutils populates
 # tooldir/bin itself; include and lib have no flat equivalent after the
-# prefix install and are created here as symlinks. Idempotent; existing
-# real directories are left alone.
+# prefix install and are created here as symlinks. The binutils install
+# already creates a real tooldir/lib (for lib/ldscripts), so a real
+# directory is merged into the prefix directory before it is replaced by
+# the symlink; leaving it in place hides glibc from gcc stage 2
+# ("cannot find crti.o", "cannot find -lc"). Idempotent.
 tooldir:
 	@mkdir -p $(PREFIX)/x86_64-gnu
-	@if [ -d $(PREFIX)/x86_64-gnu/include ] && [ ! -L $(PREFIX)/x86_64-gnu/include ]; then \
-	    echo "tooldir: leaving existing include directory"; \
-	else ln -sfnT $(PREFIX)/include $(PREFIX)/x86_64-gnu/include; fi
-	@if [ -d $(PREFIX)/x86_64-gnu/lib ] && [ ! -L $(PREFIX)/x86_64-gnu/lib ]; then \
-	    echo "tooldir: leaving existing lib directory"; \
-	else ln -sfnT $(PREFIX)/lib $(PREFIX)/x86_64-gnu/lib; fi
+	@for d in include lib; do \
+	    t=$(PREFIX)/x86_64-gnu/$$d; \
+	    if [ -d $$t ] && [ ! -L $$t ]; then \
+	        echo "tooldir: merging $$t into $(PREFIX)/$$d"; \
+	        mkdir -p $(PREFIX)/$$d && cp -a $$t/. $(PREFIX)/$$d/ && rm -rf $$t || exit 1; \
+	    fi; \
+	    ln -sfnT $(PREFIX)/$$d $$t || exit 1; \
+	done
 
 
 # Canonical cross-gnu step: rebuild and reinstall glibc once the full
