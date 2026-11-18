@@ -493,15 +493,21 @@ storeio: hurd mig
 # 3p/hurd later); they link the cross prefix like 9pfs, plus libtrivfs and
 # libpciaccess, and stay uncommitted to the 3p trees.  VIRTIO_DIR selects
 # which checkout is built, so a workbranch can be tested in place.
+# The driver build also needs the pinned Hurd source tree (for the
+# libports MIG headers and libbpf) and the install prefix; both are
+# passed explicitly so the virtio Makefile's defaults never apply here.
 VIRTIO_DIR ?= $(HOME)/src/virtio-1
+VIRTIO_MAKEFLAGS = \
+    PATH=$(PREFIX)/bin:$$PATH \
+    CC=$(PREFIX)/bin/x86_64-gnu-gcc \
+    CPATH=$(PREFIX)/include \
+    HURD_PREFIX=$(PREFIX) \
+    HURD_SRC=$(REPO_ROOT)/3p/hurd \
+    LIBS="shouldbeinlibc ihash ports iohelp fshelp trivfs pciaccess hurduser machuser irqhelp"
 
 virtio-9p: hurd libpciaccess libtrivfs libirqhelp
 	$(MAKE) -C $(VIRTIO_DIR) clean
-	$(MAKE) -C $(VIRTIO_DIR) \
-	    PATH=$(PREFIX)/bin:$$PATH \
-	    CC=$(PREFIX)/bin/x86_64-gnu-gcc \
-	    CPATH=$(PREFIX)/include \
-	    LIBS="shouldbeinlibc ihash ports iohelp fshelp trivfs pciaccess hurduser machuser irqhelp"
+	$(MAKE) -C $(VIRTIO_DIR) $(VIRTIO_MAKEFLAGS)
 	@echo "=== gate: virtio-9p ==="
 	file $(VIRTIO_DIR)/virtio-9p
 
@@ -510,11 +516,7 @@ virtio-9p: hurd libpciaccess libtrivfs libirqhelp
 # balloon binary.
 virtio-balloon: hurd libpciaccess libirqhelp
 	$(MAKE) -C $(VIRTIO_DIR) clean
-	$(MAKE) -C $(VIRTIO_DIR) \
-	    PATH=$(PREFIX)/bin:$$PATH \
-	    CC=$(PREFIX)/bin/x86_64-gnu-gcc \
-	    CPATH=$(PREFIX)/include \
-	    LIBS="shouldbeinlibc ihash ports iohelp fshelp trivfs pciaccess hurduser machuser irqhelp"
+	$(MAKE) -C $(VIRTIO_DIR) $(VIRTIO_MAKEFLAGS)
 	@echo "=== gate: virtio-balloon ==="
 	file $(VIRTIO_DIR)/virtio-balloon
 
@@ -525,11 +527,7 @@ virtio-balloon: hurd libpciaccess libirqhelp
 # client).
 virtio-blk: hurd libpciaccess libirqhelp
 	$(MAKE) -C $(VIRTIO_DIR) clean
-	$(MAKE) -C $(VIRTIO_DIR) \
-	    PATH=$(PREFIX)/bin:$$PATH \
-	    CC=$(PREFIX)/bin/x86_64-gnu-gcc \
-	    CPATH=$(PREFIX)/include \
-	    LIBS="shouldbeinlibc ihash ports iohelp fshelp trivfs pciaccess hurduser machuser irqhelp"
+	$(MAKE) -C $(VIRTIO_DIR) $(VIRTIO_MAKEFLAGS)
 	@echo "=== gate: virtio-blk ==="
 	file $(VIRTIO_DIR)/virtio-blk
 	file $(VIRTIO_DIR)/vblk-client
@@ -540,11 +538,7 @@ virtio-blk: hurd libpciaccess libirqhelp
 # translator).
 virtio-net: hurd libpciaccess libirqhelp
 	$(MAKE) -C $(VIRTIO_DIR) clean
-	$(MAKE) -C $(VIRTIO_DIR) \
-	    PATH=$(PREFIX)/bin:$$PATH \
-	    CC=$(PREFIX)/bin/x86_64-gnu-gcc \
-	    CPATH=$(PREFIX)/include \
-	    LIBS="shouldbeinlibc ihash ports iohelp fshelp trivfs pciaccess hurduser machuser irqhelp"
+	$(MAKE) -C $(VIRTIO_DIR) $(VIRTIO_MAKEFLAGS)
 	@echo "=== gate: virtio-net ==="
 	file $(VIRTIO_DIR)/virtio-net
 
