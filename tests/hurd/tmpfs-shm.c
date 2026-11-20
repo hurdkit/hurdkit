@@ -305,8 +305,8 @@ free_blocks (void)
   return st.f_bfree;
 }
 
-/* Many mapped-after-close cycles: each works, and the filesystem's free
-   space is back where it was once the last mapping is gone.  */
+/* Many mapped-after-close cycles: each works, and the filesystem has at
+   least the free space it had once the last mapping is gone.  */
 static int
 repeated_cycles (int cycles)
 {
@@ -333,14 +333,16 @@ repeated_cycles (int cycles)
     }
   /* A filesystem frees the blocks of an unlinked file once the kernel has
      let go of its memory object, which it does after munmap has
-     returned: give that a moment.  */
+     returned: give that a moment.  Only space that did not come back
+     fails the case: DIRECTORY may be on a filesystem that others use,
+     and what they free in the meantime leaves more free than before.  */
   unsigned long after = free_blocks ();
-  for (int wait = 0; after != before && wait < 500; wait++)
+  for (int wait = 0; after < before && wait < 500; wait++)
     {
       usleep (10000);
       after = free_blocks ();
     }
-  if (after != before)
+  if (after < before)
     {
       fprintf (stderr, "# free blocks: %lu before, %lu after\n", before,
                after);
