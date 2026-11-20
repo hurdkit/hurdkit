@@ -22,6 +22,7 @@ Host-local (default):
 make -C toolchain toolchain          # stages 0–8: fetch … 9pfs
 make -C toolchain 9pfs               # build just the verification ELF
 make -C toolchain libpciaccess       # cross-build libpciaccess (GNU/Hurd target)
+make -C toolchain compress-libs      # static zlib, liblzma, libzstd, liblz4, liblzo2
 make -C toolchain verify-vm          # V2–V4 against the Hurd VM
 ```
 
@@ -30,6 +31,14 @@ which clones any missing 3p repos into `3p/` (never rewrites an existing
 repo; a non-git directory at a target path is an error) and then pins
 them to the verified commits. `make -C toolchain ...` (this directory)
 assumes `3p/` is present.
+
+`compress-libs` (stages `zlib`, `xz`, `zstd`, `lz4`, `lzo`) installs
+static compression libraries, with headers and `.pc` files, for
+translators that decompress (squashfs). Each stage downloads a pinned
+release tarball into `~/work/x86_64-gnu-src`, checks its sha256 against
+the value in the Makefile, and gates on a static GNU/Hurd program that
+links the library. It is not part of `make toolchain`. The `squashfs`
+target runs it first.
 
 The 3p sources the toolchain builds against (`mig`, `glibc`, `gnumach`,
 `hurd`, `9pfs`, `libpciaccess`) are pinned to the exact commits that were

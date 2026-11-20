@@ -30,7 +30,10 @@ GCC_VER      := 15.3.0
 	mig hurd hurd-headers libpciaccess libtrivfs libirqhelp storeio \
 	virtio-9p virtio-balloon virtio-blk virtio-net 9pfs verify-vm \
 	clean tooldir 3p-pin glibc-rebuild \
-	virtio-clean
+	virtio-clean \
+	libdiskfs fs-translators exfatfs exfatfs-clean \
+	compress-libs zlib xz zstd lz4 lzo \
+	squashfs squashfs-clean
 
 # The verified 3p checkouts, pinned to exact SHAs (see
 # stuff/crosscompile_plan.md, "3p source pins"). The shared 3p checkout is
@@ -439,44 +442,267 @@ libirqhelp: hurd mig
 	@echo "=== gate: libirqhelp ==="
 	ls $(PREFIX)/lib/libirqhelp.so $(PREFIX)/include/hurd/irqhelp.h >/dev/null
 
+# libdiskfs and libstore are not installed by the `hurd` stage either.  The
+# standalone exfatfs and squashfs translators link them from the prefix,
+# with libhurdbugaddr for their --help bug address.  libstore's install includes
+# the libstore_<type>.a archives that select the store types a static
+# filesystem links.  libstore has gunzip and bunzip2 only if zlib and
+# libbz2 are in the prefix when it is configured.
+libdiskfs: hurd mig
+	@if ls $(PREFIX)/lib/libdiskfs.so >/dev/null 2>&1; then \
+	    echo "(skipping: libdiskfs already installed)"; \
+	else \
+	    $(call hurd-configure,$(REPO_ROOT)/3p/hurd,$(BUILD)/hurd-diskfs) && \
+	    for d in libhurdbugaddr libshouldbeinlibc libihash libiohelp libports \
+	             libpager libfshelp libstore libdiskfs; do \
+	        make -C $$d -j$(NPROC) || exit 1; \
+	    done && \
+	    for d in libhurdbugaddr libstore libdiskfs; do \
+	        make -C $$d install || exit 1; \
+	    done; \
+	fi
+	@echo "=== gate: libdiskfs ==="
+	ls $(PREFIX)/lib/libdiskfs.a $(PREFIX)/lib/libstore.a \
+	    $(PREFIX)/lib/libstore_device.a $(PREFIX)/lib/libhurdbugaddr.a \
+	    $(PREFIX)/include/hurd/diskfs.h $(PREFIX)/include/hurd/store.h >/dev/null
+
+# Copy a Hurd source tree and configure the copy out of tree for x86_64-gnu,
+# the way the `hurd` stage does: $(1) is the source tree, $(2) the build
+# directory, and the copy lands in $(2)-src.  Both are recreated on every
+# call, so a build never depends on what an earlier one left behind.  The
+# translators built below need generated headers (libstore/store.h,
+# libnetfs/fs_S.h, version.h) that only a configured tree has; a standalone
+# `make -C 3p/hurd/<dir>` fails without them.  Ends inside $(2) with PATH
+# and CPATH pointing at the prefix.
+define hurd-configure
+rm -rf $(2)-src $(2) && \
+	cp -a $(1) $(2)-src && \
+	sed -i -e '/^if test "x$$cross_compiling" = "xyes"; then$$/,/^fi$$/d' $(2)-src/configure.ac && \
+	(cd $(2)-src && autoreconf -i) && \
+	mkdir -p $(2) && cd $(2) && \
+	export PATH=$(PREFIX)/bin:$$PATH CPATH=$(PREFIX)/include && \
+	CC=$(PREFIX)/bin/x86_64-gnu-gcc MIG=$(PREFIX)/bin/mig \
+	CPPFLAGS="-I$(PREFIX)/include" LDFLAGS="-L$(PREFIX)/lib" \
+	$(2)-src/configure \
+	    --host=x86_64-gnu --build=x86_64-pc-linux-gnu --prefix=$(PREFIX) \
+	    --without-parted --without-libtirpc --without-libdaemon \
+	    --without-rump --without-acpica --without-libcrypt --disable-profile && \
+	make version.h
+endef
+
+# Fail unless each argument is a GNU/Hurd ELF.
+define hurd-elf-gate
+for f in $(1); do \
+	    file $$f; \
+	    file $$f | grep -q 'for GNU/Hurd' || { echo "$$f: not a GNU/Hurd ELF" >&2; exit 1; }; \
+	done
+endef
+
 # storeio is not installed to the prefix by the `hurd` stage, so it has its
-# own target. It builds inside a configured out-of-tree Hurd tree (a
-# standalone `make -C 3p/hurd/storeio` fails: generated headers such as
-# libstore/store.h, libnetfs/fs_S.h, version.h and libhurdbugaddr.a are
-# missing).  Libs are built in dependency order:
-#   libshouldbeinlibc -> libihash -> libiohelp -> libports -> libpager ->
-#   libfshelp -> libnetfs -> libstore -> libhurdbugaddr -> storeio.
+# own target.  Libs are built in dependency order.
 # The hurdkit-branch fix (commit e07e9590) fixes the --no-cache byte-to-block
 # conversion (<< instead of >>) in storeio/dev.c.
 storeio: hurd mig
-	rm -rf $(BUILD)/hurd-src $(BUILD)/hurd && \
-	cp -a $(REPO_ROOT)/3p/hurd $(BUILD)/hurd-src && \
-	cd $(BUILD)/hurd-src && \
-	sed -i -e '/^if test "x$$cross_compiling" = "xyes"; then$$/,/^fi$$/d' configure.ac && \
-	autoreconf -i && \
-	mkdir -p $(BUILD)/hurd && cd $(BUILD)/hurd && \
-	    PATH=$(PREFIX)/bin:$$PATH \
-	    CC=$(PREFIX)/bin/x86_64-gnu-gcc MIG=$(PREFIX)/bin/mig \
-	    CPPFLAGS="-I$(PREFIX)/include" LDFLAGS="-L$(PREFIX)/lib" CPATH=$(PREFIX)/include \
-	    $(BUILD)/hurd-src/configure \
-	        --host=x86_64-gnu --build=x86_64-pc-linux-gnu --prefix=$(PREFIX) \
-	        --without-parted --without-libtirpc --without-libdaemon \
-	        --without-rump --without-acpica --without-libcrypt --disable-profile && \
-	    sed -e 's/MASTER_HURD_VERSION/"$(shell sed -n "s/^package-version := //p" $(BUILD)/hurd/config.make)"/' \
-	        < $(BUILD)/hurd-src/version.h.in > $(BUILD)/hurd/version.h && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libshouldbeinlibc -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libihash -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libiohelp -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libports -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libpager -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libfshelp -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libnetfs -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libstore -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libhurdbugaddr -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C storeio storeio.static
+	$(call hurd-configure,$(REPO_ROOT)/3p/hurd,$(BUILD)/hurd) && \
+	for d in libshouldbeinlibc libihash libiohelp libports libpager libfshelp \
+	         libnetfs libstore libhurdbugaddr; do \
+	    make -C $$d -j$(NPROC) || exit 1; \
+	done && \
+	make -C storeio storeio.static
 	@echo "=== gate: storeio ==="
-	file $(BUILD)/hurd/storeio/storeio.static
-	file $(BUILD)/hurd/storeio/storeio.static | grep -q 'for GNU/Hurd' || { echo "storeio: binary is not a GNU/Hurd ELF" >&2; exit 1; }
+	$(call hurd-elf-gate,$(BUILD)/hurd/storeio/storeio.static)
+
+# Static libdiskfs translators from HURD_TREE (default: the pinned 3p/hurd),
+# for the filesystem harness (scripts/exfatfs_test.sh).  Static, so they run
+# in the guest whatever Hurd libraries the Debian image ships.  The output
+# is $(BUILD)/hurd-translators/<name>/<name>.static.  exfatfs is not one of
+# them: it has its own repo and target (`exfatfs`, below).
+HURD_TREE      ?= $(REPO_ROOT)/3p/hurd
+FS_TRANSLATORS ?= fatfs
+# Checked when make reads this file, so a missing translator stops the
+# build before any stage runs rather than after the configure.
+ifneq ($(filter fs-translators,$(MAKECMDGOALS)),)
+FS_MISSING := $(strip $(foreach t,$(FS_TRANSLATORS),$(if $(wildcard $(abspath $(HURD_TREE))/$(t)/Makefile),,$(t))))
+ifneq ($(FS_MISSING),)
+$(error HURD_TREE=$(abspath $(HURD_TREE)) has no $(FS_MISSING) translator)
+endif
+endif
+fs-translators: hurd mig
+	$(call hurd-configure,$(abspath $(HURD_TREE)),$(BUILD)/hurd-translators) && \
+	for d in libhurdbugaddr libshouldbeinlibc libihash libiohelp libports \
+	         libpager libfshelp libstore libdiskfs; do \
+	    make -C $$d -j$(NPROC) || exit 1; \
+	done && \
+	for t in $(FS_TRANSLATORS); do make -C $$t -j$(NPROC) $$t.static || exit 1; done
+	@echo "=== gate: fs-translators ==="
+	$(call hurd-elf-gate,$(foreach t,$(FS_TRANSLATORS),$(BUILD)/hurd-translators/$(t)/$(t).static))
+
+# The exFAT translator lives in its own repo (exfatfs, the
+# standalone pattern of 3p/9pfs and the virtio drivers) and links libdiskfs
+# and libstore from the prefix.  EXFATFS_DIR selects which checkout is
+# built.  The harness takes exfatfs.static from it.
+EXFATFS_DIR ?= $(HOME)/src/exfatfs
+
+exfatfs: hurd mig libdiskfs
+	$(MAKE) -C $(EXFATFS_DIR) HURD_PREFIX=$(PREFIX)
+	@echo "=== gate: exfatfs ==="
+	$(call hurd-elf-gate,$(EXFATFS_DIR)/exfatfs.static)
+
+# Clean the exfatfs build artifacts in EXFATFS_DIR.
+exfatfs-clean:
+	$(MAKE) -C $(EXFATFS_DIR) clean
+
+# Static compression libraries for translators that decompress (squashfs
+# needs all five compressors the Linux driver supports).  Each stage
+# fetches a pinned release tarball into $(SRC), checks its sha256, builds
+# it in a fresh $(BUILD)/<lib> and installs headers, the .a and its .pc
+# file into $(PREFIX); no shared objects, so a translator linked against
+# them is self-contained.  The stage skips when its .a is installed.  Its
+# gate links a static GNU/Hurd program that calls the library.  Not in
+# the default `toolchain` chain: only translators that need them do.
+ZLIB_VER := 1.3.1
+XZ_VER   := 5.8.1
+ZSTD_VER := 1.5.7
+LZ4_VER  := 1.10.0
+LZO_VER  := 2.10
+
+# Per library: tarball name, download URL and sha256.
+zlib_TARBALL := zlib-$(ZLIB_VER).tar.gz
+zlib_URL     := https://github.com/madler/zlib/releases/download/v$(ZLIB_VER)/$(zlib_TARBALL)
+zlib_SHA256  := 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+xz_TARBALL   := xz-$(XZ_VER).tar.xz
+xz_URL       := https://github.com/tukaani-project/xz/releases/download/v$(XZ_VER)/$(xz_TARBALL)
+xz_SHA256    := 0b54f79df85912504de0b14aec7971e3f964491af1812d83447005807513cd9e
+zstd_TARBALL := zstd-$(ZSTD_VER).tar.gz
+zstd_URL     := https://github.com/facebook/zstd/releases/download/v$(ZSTD_VER)/$(zstd_TARBALL)
+zstd_SHA256  := eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+lz4_TARBALL  := lz4-$(LZ4_VER).tar.gz
+lz4_URL      := https://github.com/lz4/lz4/releases/download/v$(LZ4_VER)/$(lz4_TARBALL)
+lz4_SHA256   := 537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b
+lzo_TARBALL  := lzo-$(LZO_VER).tar.gz
+lzo_URL      := https://www.oberhumer.com/opensource/lzo/download/$(lzo_TARBALL)
+lzo_SHA256   := c0f892943208266f9b6543b3ae308fab6284c5c90e627931446fb49b4221a072
+
+# -fPIC: once these are in the prefix, the Hurd configure finds zlib and
+# links it into shared libraries such as libstore.so.
+CROSS_ENV := PATH=$(PREFIX)/bin:$$PATH CC=$(PREFIX)/bin/x86_64-gnu-gcc \
+	AR=$(PREFIX)/bin/x86_64-gnu-ar RANLIB=$(PREFIX)/bin/x86_64-gnu-ranlib \
+	CFLAGS="-O2 -fPIC"
+
+# $(1): library name.  Download its tarball unless present, verify the
+# sha256 (a mismatch deletes the file and fails), then unpack a fresh
+# copy into $(BUILD)/$(1).  Ends inside the unpacked source directory.
+define compress-unpack
+mkdir -p $(SRC) && cd $(SRC) && \
+	{ test -f $($(1)_TARBALL) || { wget -q -O $($(1)_TARBALL).part $($(1)_URL) && \
+	    mv $($(1)_TARBALL).part $($(1)_TARBALL); }; } && \
+	{ echo "$($(1)_SHA256)  $($(1)_TARBALL)" | sha256sum -c --quiet || \
+	    { rm -f $(SRC)/$($(1)_TARBALL); exit 1; }; } && \
+	rm -rf $(BUILD)/$(1) && mkdir -p $(BUILD)/$(1) && \
+	tar -xf $(SRC)/$($(1)_TARBALL) -C $(BUILD)/$(1) --strip-components=1 && \
+	cd $(BUILD)/$(1)
+endef
+
+# $(1): library name, $(2): header, $(3): -l flag, $(4): C statement
+# calling the library.  Links a static GNU/Hurd test program, and a shared
+# object holding every member of the archive, which proves it is PIC.
+define compress-gate
+@echo "=== gate: $(1) ==="
+ls $(PREFIX)/include/$(2) $(PREFIX)/lib/lib$(3).a
+printf '#include <stdio.h>\n#include <$(2)>\nint main(void) { $(4); return 0; }\n' > $(BUILD)/$(1)-gate.c
+$(PREFIX)/bin/x86_64-gnu-gcc -static -o $(BUILD)/$(1)-gate $(BUILD)/$(1)-gate.c -l$(3)
+$(call hurd-elf-gate,$(BUILD)/$(1)-gate)
+$(PREFIX)/bin/x86_64-gnu-gcc -shared -o $(BUILD)/$(1)-gate.so \
+	    -Wl,--whole-archive $(PREFIX)/lib/lib$(3).a -Wl,--no-whole-archive
+rm -f $(BUILD)/$(1)-gate $(BUILD)/$(1)-gate.c $(BUILD)/$(1)-gate.so
+endef
+
+compress-libs: zlib xz zstd lz4 lzo
+
+zlib: gcc2
+	@if [ -f $(PREFIX)/lib/libz.a ]; then \
+	    echo "(skipping: libz.a already installed)"; \
+	else \
+	    $(call compress-unpack,zlib) && \
+	    $(CROSS_ENV) CHOST=x86_64-gnu ./configure --static --prefix=$(PREFIX) && \
+	    $(CROSS_ENV) make -j$(NPROC) libz.a && \
+	    $(CROSS_ENV) make install && \
+	    rm -rf $(BUILD)/zlib; \
+	fi
+	$(call compress-gate,zlib,zlib.h,z,puts(zlibVersion()))
+
+# Only liblzma: the xz command-line tools are not wanted in the prefix.
+xz: gcc2
+	@if [ -f $(PREFIX)/lib/liblzma.a ]; then \
+	    echo "(skipping: liblzma.a already installed)"; \
+	else \
+	    $(call compress-unpack,xz) && \
+	    $(CROSS_ENV) ./configure --host=x86_64-gnu --build=x86_64-pc-linux-gnu \
+	        --prefix=$(PREFIX) --disable-shared --enable-static \
+	        --disable-xz --disable-xzdec --disable-lzmadec --disable-lzmainfo \
+	        --disable-lzma-links --disable-scripts --disable-doc --disable-nls && \
+	    $(CROSS_ENV) make -j$(NPROC) -C src/liblzma && \
+	    $(CROSS_ENV) make -C src/liblzma install && \
+	    rm -rf $(BUILD)/xz; \
+	fi
+	$(call compress-gate,xz,lzma.h,lzma,puts(lzma_version_string()))
+
+# Single-threaded: translators drive their own threads, and the
+# multithreaded build adds a pthread dependency to every user.
+zstd: gcc2
+	@if [ -f $(PREFIX)/lib/libzstd.a ]; then \
+	    echo "(skipping: libzstd.a already installed)"; \
+	else \
+	    $(call compress-unpack,zstd) && \
+	    $(CROSS_ENV) make -j$(NPROC) -C lib libzstd.a-nomt && \
+	    $(CROSS_ENV) make -C lib install-static install-includes install-pc \
+	        PREFIX=$(PREFIX) && \
+	    rm -rf $(BUILD)/zstd; \
+	fi
+	$(call compress-gate,zstd,zstd.h,zstd,puts(ZSTD_versionString()))
+
+lz4: gcc2
+	@if [ -f $(PREFIX)/lib/liblz4.a ]; then \
+	    echo "(skipping: liblz4.a already installed)"; \
+	else \
+	    $(call compress-unpack,lz4) && \
+	    $(CROSS_ENV) make -j$(NPROC) -C lib liblz4.a && \
+	    $(CROSS_ENV) make -C lib install PREFIX=$(PREFIX) BUILD_SHARED=no && \
+	    rm -rf $(BUILD)/lz4; \
+	fi
+	$(call compress-gate,lz4,lz4.h,lz4,puts(LZ4_versionString()))
+
+lzo: gcc2
+	@if [ -f $(PREFIX)/lib/liblzo2.a ]; then \
+	    echo "(skipping: liblzo2.a already installed)"; \
+	else \
+	    $(call compress-unpack,lzo) && \
+	    $(CROSS_ENV) ./configure --host=x86_64-gnu --build=x86_64-pc-linux-gnu \
+	        --prefix=$(PREFIX) --disable-shared --enable-static && \
+	    $(CROSS_ENV) make -j$(NPROC) src/liblzo2.la && \
+	    $(CROSS_ENV) make install-libLTLIBRARIES install-pkgincludeHEADERS \
+	        install-pkgconfigDATA && \
+	    rm -rf $(BUILD)/lzo; \
+	fi
+	$(call compress-gate,lzo,lzo/lzo1x.h,lzo2,if (lzo_init() != LZO_E_OK) return 1)
+
+# The squashfs translator lives in its own repo too, built like exfatfs.
+# SQUASHFS_DIR selects which checkout is built, and the harness takes
+# squashfs.static from it.  The WITH_* settings make a missing
+# compression library fail the build instead of leaving its compressor
+# out.  compress-libs comes before libdiskfs so that a first libdiskfs
+# build finds zlib and gives libstore the gunzip store type.
+SQUASHFS_DIR ?= $(HOME)/src/squashfs
+
+squashfs: hurd mig compress-libs libdiskfs
+	$(MAKE) -C $(SQUASHFS_DIR) HURD_PREFIX=$(PREFIX) \
+	    WITH_GZIP=yes WITH_XZ=yes WITH_ZSTD=yes WITH_LZ4=yes WITH_LZO=yes
+	@echo "=== gate: squashfs ==="
+	$(call hurd-elf-gate,$(SQUASHFS_DIR)/squashfs.static)
+
+# Clean the squashfs build artifacts in SQUASHFS_DIR.
+squashfs-clean:
+	$(MAKE) -C $(SQUASHFS_DIR) clean
 
 # 9pfs calls two RPC stubs directly: exec_exec_paths (file-exec-paths.c,
 # from libhurduser) and mach_port_move_member (io-reauthenticate.c, from
@@ -601,7 +827,7 @@ toolchain: 3p-pin Dockerfile.hurd-x86_64-gnu docker-stages.sh
 binutils gcc1 gcc2 gnumach mig glibc: toolchain
 	@echo "stages $@ are run by the container above (binutils -> gcc2, incl. MIG)"
 
-hurd libpciaccess 9pfs verify-vm: toolchain
+hurd libpciaccess compress-libs 9pfs verify-vm: toolchain
 	@echo "stage $@ is not implemented in the docker backend yet;"
 	@echo "run it host-local: make -C toolchain $@ BACKEND=hostlocal"
 	@echo "(MIG, the Hurd headers and glibc are installed in the prefix;"
