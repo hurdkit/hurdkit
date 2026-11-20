@@ -79,6 +79,27 @@ VIRTIO_9P_BIN := $(VIRTIO_DIR)/virtio-9p
 GNUMACH_DIR   ?= 3p/gnumach
 # Number of CPUs configured in the gnumach kernel.
 GNUMACH_NCPUS ?= 1
+# Tickless gnumach build (requires GNUMACH_NCPUS=1, see
+# 3p/gnumach/kern/mach_clock.h).
+GNUMACH_TICKLESS ?= no
+# Device drivers compiled into gnumach. Ideally set to "none" for the vm image
+# (virtio provides all needed devices); empty keeps all drivers.
+GNUMACH_DEVICE_DRIVERS ?= none
+# Optimization flags for cross-compiled Hurd userspace and virtio drivers.
+CFLAGS ?= -O2 -g -Wall
+# The vm image and its overlay directory.
+HURD_VM_IMG           := $(IMG_DIR)/hurd.vm.qcow2
+HURD_OVERLAY_DIR      := $(TMP_DIR)/vm-overlay
+# Hurd servers/translators to ship in the vm overlay (subdirs of 3p/hurd).
+# Must mirror toolchain/Makefile's HURD_SERVERS_SUBDIRS default.
+# XXX: console-client
+HURD_SERVERS_SUBDIRS  := auth proc exec term ext2fs tmpfs fatfs \
+	storeio pfinet console init devnode pflocal boot \
+	hostmux usermux shutdown rtc \
+	eth-multiplexer
+# Track source edits so the gnumach kernel and hurd-servers rebuilds
+# when the 3p trees change.
+HURD_SOURCES := $(shell find 3p/hurd -type f -not -path '*/.git/*' 2>/dev/null)
 
 # Number of vCPUs for the SMP test harness (default 2; must equal
 # GNUMACH_NCPUS for the SMP kernel build or gnumach's ACPI parse aborts).
@@ -102,13 +123,13 @@ LOCK_FILE     := $(IMG_DIR)/.build.lock
 
 .PHONY: all download check base accounts packages kernel provision stage
 .PHONY: run run-nokvm ssh ssh-peon
-.PHONY: clean distclean clean-images rebuild
+.PHONY: clean distclean clean-images rebuild no-rebuild-touch
 .PHONY: toolchain toolchain-clean toolchain-docker
 .PHONY: verify-vm hurd-build
-.PHONY: gnumach-kernel smp-kernel up-kernel 9pfs fetch-3p
+.PHONY: gnumach-kernel smp-kernel up-kernel 9pfs fetch-3p hurd-servers
 .PHONY: virtio-blk virtio-blk-test virtio-net virtio-net-test
 .PHONY: virtio-net-image virtio-net-connectivity-test
-.PHONY: virtio-bench-image virtio-bench-vnet-image virtio-bench
+.PHONY: virtio-bench-image virtio-bench-vnet-image virtio-bench hurd-vm-image
 .PHONY: run-smp-tests run-up-tests smp-image up-image
 .PHONY: virtio-clean gnumach-clean
 
@@ -144,6 +165,7 @@ base: $(BASE_IMG)
 # would rebuild the base image, and discard its provisioning, on every
 # "make run" and "make provision".
 $(BASE_IMG): $(EXTRACT_STAMP) scripts/prepare_base.sh scripts/partition.sh
+	@echo "Building base image $@"
 	@$(MKDIR_P) $(IMG_DIR)
 	@$(LOCK) $(LOCK_FILE) sh -c 'set -e; \
 		ROOT_PASSWORD=$(ROOT_PASSWORD) bash scripts/prepare_base.sh $(RAW_IMG) $(WORK_IMG); \
@@ -334,19 +356,23 @@ toolchain-clean:       ; $(MAKE) -C toolchain clean
 toolchain-docker: fetch-3p ; $(MAKE) -C toolchain toolchain BACKEND=docker
 hurd-build: fetch-3p   ; $(MAKE) -C toolchain hurd
 gnumach-kernel: fetch-3p ; $(MAKE) -C toolchain gnumach-kernel \
-	GNUMACH_DIR=$(abspath $(GNUMACH_DIR)) GNUMACH_NCPUS=$(GNUMACH_NCPUS)
+	GNUMACH_DIR=$(abspath $(GNUMACH_DIR)) \
+	GNUMACH_NCPUS=$(GNUMACH_NCPUS) \
+	GNUMACH_TICKLESS=$(GNUMACH_TICKLESS) \
+	GNUMACH_DEVICE_DRIVERS=$(GNUMACH_DEVICE_DRIVERS)
 gnumach-clean: ; $(RM) -r $(BUILD)/gnumach-kernel $(BUILD)/gnumach-kernel-src
 smp-kernel: fetch-3p ; $(MAKE) -C toolchain gnumach-kernel \
 	GNUMACH_DIR=$(abspath $(GNUMACH_DIR)) GNUMACH_NCPUS=2
 up-kernel: fetch-3p ; $(MAKE) -C toolchain gnumach-kernel \
 	GNUMACH_DIR=$(abspath $(GNUMACH_DIR)) GNUMACH_NCPUS=1
 9pfs: fetch-3p         ; $(MAKE) -C toolchain 9pfs
-virtio-9p: fetch-3p    ; $(MAKE) -C toolchain virtio-9p VIRTIO_DIR=$(VIRTIO_DIR)
-virtio-balloon: fetch-3p    ; $(MAKE) -C toolchain virtio-balloon VIRTIO_DIR=$(VIRTIO_DIR)
-virtio-blk: fetch-3p    ; $(MAKE) -C toolchain virtio-blk VIRTIO_DIR=$(VIRTIO_DIR)
-virtio-net: fetch-3p    ; $(MAKE) -C toolchain virtio-net VIRTIO_DIR=$(VIRTIO_NET_DIR)
+virtio-9p: fetch-3p    ; $(MAKE) -C toolchain virtio-9p VIRTIO_DIR=$(VIRTIO_DIR) CFLAGS="$(CFLAGS)"
+virtio-balloon: fetch-3p    ; $(MAKE) -C toolchain virtio-balloon VIRTIO_DIR=$(VIRTIO_DIR) CFLAGS="$(CFLAGS)"
+virtio-blk: fetch-3p    ; $(MAKE) -C toolchain virtio-blk VIRTIO_DIR=$(VIRTIO_DIR) CFLAGS="$(CFLAGS)"
+virtio-net: fetch-3p    ; $(MAKE) -C toolchain virtio-net VIRTIO_DIR=$(VIRTIO_NET_DIR) CFLAGS="$(CFLAGS)"
 virtio-clean: fetch-3p ; $(MAKE) -C toolchain virtio-clean VIRTIO_DIR=$(VIRTIO_DIR)
 storeio: fetch-3p       ; $(MAKE) -C toolchain storeio
+hurd-servers: fetch-3p   ; $(MAKE) -C toolchain hurd-servers
 
 # Boot the guest with a host directory shared through QEMU's virtio-9p
 # device and run the translator test matrix: the device selftest, the
@@ -495,25 +521,78 @@ $(IMG_DIR)/hurd.bench-vnet.qcow2: $(TEST_IMG) scripts/provision_stage.sh scripts
 # Build the cross-compiled artifacts on demand (only if missing) without
 # forcing a full rebuild of the phony toolchain targets on every make run.
 $(BUILD)/hurd/storeio/storeio.static:
-	$(MAKE) -C toolchain storeio
+	$(MAKE) -C toolchain storeio CFLAGS="$(CFLAGS)"
 
 $(VIRTIO_DIR)/virtio-9p:
-	$(MAKE) -C toolchain virtio-9p VIRTIO_DIR=$(VIRTIO_DIR)
+	$(MAKE) -C toolchain virtio-9p VIRTIO_DIR=$(VIRTIO_DIR) CFLAGS="$(CFLAGS)"
 
 3p/9pfs/9pfs:
-	$(MAKE) -C toolchain 9pfs
+	$(MAKE) -C toolchain 9pfs CFLAGS="$(CFLAGS)"
 
 # Track the gnumach source tree so edits trigger a rebuild (the build copies
 # the tree, so a plain directory mtime is not enough).
-GNUMACH_SOURCES := $(shell find $(GNUMACH_DIR) -type f 2>/dev/null)
+GNUMACH_SOURCES := $(shell find $(GNUMACH_DIR) -type f -not -path '*/.git/*' 2>/dev/null)
 $(BUILD)/gnumach-kernel/gnumach: $(GNUMACH_SOURCES)
-	$(MAKE) -C toolchain gnumach-kernel GNUMACH_NCPUS=$(GNUMACH_NCPUS)
+	$(MAKE) -C toolchain gnumach-kernel GNUMACH_NCPUS=$(GNUMACH_NCPUS) GNUMACH_TICKLESS=$(GNUMACH_TICKLESS) GNUMACH_DEVICE_DRIVERS=$(GNUMACH_DEVICE_DRIVERS) CFLAGS="$(CFLAGS)"
 
 $(VIRTIO_NET_DIR)/virtio-net:
-	$(MAKE) -C toolchain virtio-net VIRTIO_DIR=$(VIRTIO_NET_DIR)
+	$(MAKE) -C toolchain virtio-net VIRTIO_DIR=$(VIRTIO_NET_DIR) CFLAGS="$(CFLAGS)"
 
-$(VIRTIO_DIR)/virtio-blk:
-	$(MAKE) -C toolchain virtio-blk VIRTIO_DIR=$(VIRTIO_DIR)
+$(VIRTIO_DIR)/virtio-blk.static:
+	$(MAKE) -C toolchain virtio-blk-static VIRTIO_DIR=$(VIRTIO_DIR) CFLAGS="$(CFLAGS)"
+
+$(VIRTIO_DIR)/virtio-balloon:
+	$(MAKE) -C toolchain virtio-balloon VIRTIO_DIR=$(VIRTIO_DIR) CFLAGS="$(CFLAGS)"
+
+# Build the vm image: hurd.vm.qcow2 layered on hurd.packages.qcow2, shipping
+# the tickless gnumach kernel, hurd servers/translators, all four virtio
+# drivers and the 9pfs translator.
+$(BUILD)/hurd-servers/.stamp: $(HURD_SOURCES)
+	$(MAKE) -C toolchain hurd-servers HURD_SERVERS_SUBDIRS="$(HURD_SERVERS_SUBDIRS)" CFLAGS="$(CFLAGS)"
+	touch $@
+
+hurd-vm-image: $(HURD_VM_IMG)
+
+$(HURD_VM_IMG): $(TEST_IMG) scripts/provision_stage.sh scripts/provision_guest.py \
+        $(BUILD)/gnumach-kernel/gnumach $(BUILD)/hurd-servers/.stamp \
+        $(VIRTIO_DIR)/virtio-balloon $(VIRTIO_DIR)/virtio-blk.static \
+        $(VIRTIO_NET_DIR)/virtio-net $(VIRTIO_DIR)/virtio-9p \
+        3p/9pfs/9pfs cfg/grub.cfg $(HURD_SOURCES)
+	rm -rf $(HURD_OVERLAY_DIR)
+	$(MKDIR_P) $(HURD_OVERLAY_DIR)/hurd
+	# Hurd servers/translators from the out-of-tree build tree.
+	# Prefer <target>.static when it exists (matches storeio.static).
+	for s in $(HURD_SERVERS_SUBDIRS); do \
+	    b=$(BUILD)/hurd-servers/$$s/$$s; \
+	    if [ -f "$$b.static" ]; then \
+	        cp "$$b.static" "$(HURD_OVERLAY_DIR)/hurd/$$s" || exit 1; \
+	    else \
+	        test -f "$$b" || { echo "missing: $$b" >&2; exit 1; }; \
+	        cp "$$b" "$(HURD_OVERLAY_DIR)/hurd/$$s" || exit 1; \
+	    fi; \
+	    chmod 755 "$(HURD_OVERLAY_DIR)/hurd/$$s" || exit 1; \
+	done
+	# Virtio drivers and 9pfs translator.
+	cp $(VIRTIO_DIR)/virtio-balloon $(HURD_OVERLAY_DIR)/hurd/virtio-balloon
+	cp $(VIRTIO_DIR)/virtio-blk.static $(HURD_OVERLAY_DIR)/hurd/virtio-blk.static
+	cp $(VIRTIO_NET_DIR)/virtio-net $(HURD_OVERLAY_DIR)/hurd/virtio-net
+	cp $(VIRTIO_DIR)/virtio-9p      $(HURD_OVERLAY_DIR)/hurd/virtio-9p
+	cp 3p/9pfs/9pfs                 $(HURD_OVERLAY_DIR)/hurd/9pfs
+	chmod 755 $(HURD_OVERLAY_DIR)/hurd/virtio-balloon \
+	    $(HURD_OVERLAY_DIR)/hurd/virtio-blk.static \
+	    $(HURD_OVERLAY_DIR)/hurd/virtio-net \
+	    $(HURD_OVERLAY_DIR)/hurd/virtio-9p \
+	    $(HURD_OVERLAY_DIR)/hurd/9pfs
+	# GRUB configuration for the guest boot path.
+	$(MKDIR_P) $(HURD_OVERLAY_DIR)/boot/grub
+	gzip -c $(BUILD)/gnumach-kernel/gnumach > $(HURD_OVERLAY_DIR)/boot/gnumach-1.8-hurdkit.gz; \
+	chmod 644 $(HURD_OVERLAY_DIR)/boot/gnumach-1.8-hurdkit.gz || exit 1
+	cp cfg/grub.cfg $(HURD_OVERLAY_DIR)/boot/grub/grub.cfg || exit 1
+	chmod 644 $(HURD_OVERLAY_DIR)/boot/grub/grub.cfg || exit 1
+	SSH_PORT="$(SSH_PORT)" $(MAKE) stage STAGE=kernel \
+		VARIANT="$(abspath $@)" \
+		STAGE_INPUT="$(abspath $(TEST_IMG))" \
+		CUSTOM_OVERLAY="$(abspath $(HURD_OVERLAY_DIR))"
 
 # Build the SMP kernel image (-smp 2): gnumach with GNUMACH_NCPUS=2 staged
 # into hurd.kernel.smp.qcow2 on top of the packages image.  Run this before
@@ -604,6 +683,14 @@ clean:
 clean-images:
 	$(RM) $(IMG_DIR)/*.qcow2 $(IMG_DIR)/*.img $(IMG_DIR)/.extracted
 	$(RM) -r $(TMP_DIR)
+
+# Touch the staged chain images (base, accounts, packages) so that editing
+# a prerequisite script (e.g. scripts/partition.sh) does not cascade into a
+# full base rebuild. Only use this when you are sure the edited script does
+# not change image contents; it suppresses make's "prerequisite is newer"
+# check by making the images newer than the scripts.
+no-rebuild-touch:
+	@touch $(BASE_IMG) $(IMG_DIR)/hurd.accounts.qcow2 $(IMG_DIR)/hurd.packages.qcow2 2>/dev/null || true
 
 # Rebuild the default image pipeline from scratch
 rebuild: clean-images all

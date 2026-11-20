@@ -19,6 +19,11 @@ GNUMACH_DIR ?= $(REPO_ROOT)/3p/gnumach
 GNUMACH_NCPUS ?= 1
 GNUMACH_NCPUS_IS_SMP := $(shell test "$(GNUMACH_NCPUS)" -gt 1 2>/dev/null && echo yes)
 GNUMACH_NCPUS_OPTION := $(if $(GNUMACH_NCPUS_IS_SMP),--enable-ncpus=$(GNUMACH_NCPUS))
+GNUMACH_TICKLESS ?= no
+GNUMACH_TICKLESS_OPTION := $(if $(filter yes,$(GNUMACH_TICKLESS)),--enable-tickless)
+GNUMACH_DEVICE_DRIVERS ?=
+GNUMACH_DEVICE_DRIVERS_OPTION := $(if $(GNUMACH_DEVICE_DRIVERS),--enable-device-drivers=$(GNUMACH_DEVICE_DRIVERS))
+CFLAGS ?= -O2 -g -Wall
 
 SSH_PORT ?= 2222
 
@@ -27,7 +32,7 @@ GCC_VER      := 15.3.0
 
 .PHONY: all toolchain toolchain-clean fetch \
 	binutils gcc1 gnumach gnumach-kernel glibc gcc2 \
-	mig hurd hurd-headers libpciaccess libtrivfs libirqhelp storeio \
+	mig hurd hurd-headers libpciaccess libtrivfs libmachdev libirqhelp storeio hurd-servers \
 	virtio-9p virtio-balloon virtio-blk virtio-net 9pfs verify-vm \
 	clean tooldir 3p-pin glibc-rebuild \
 	virtio-clean
@@ -189,6 +194,10 @@ gnumach-kernel: gnumach mig
 	    ''|*[!0-9]*) echo "gnumach-kernel: GNUMACH_NCPUS must be a positive integer" >&2; exit 1 ;; \
 	esac; \
 	test "$(GNUMACH_NCPUS)" -ge 1 || { echo "gnumach-kernel: GNUMACH_NCPUS must be at least 1" >&2; exit 1; }
+	test "$(GNUMACH_TICKLESS)" != yes || test "$(GNUMACH_NCPUS)" -eq 1 || { \
+	    echo "gnumach-kernel: GNUMACH_TICKLESS=yes requires GNUMACH_NCPUS=1" >&2; \
+	    exit 1; \
+	}
 	rm -rf $(BUILD)/gnumach-kernel-src $(BUILD)/gnumach-kernel
 	cp -a $(GNUMACH_DIR) $(BUILD)/gnumach-kernel-src
 	cd $(BUILD)/gnumach-kernel-src && autoreconf -i
@@ -197,7 +206,7 @@ gnumach-kernel: gnumach mig
 	    CC=$(PREFIX)/bin/x86_64-gnu-gcc MIG=$(PREFIX)/bin/mig \
 	    $(BUILD)/gnumach-kernel-src/configure --prefix=$(PREFIX) \
 	        --host=x86_64-gnu --build=x86_64-pc-linux-gnu \
-	        $(GNUMACH_NCPUS_OPTION) && \
+	        $(GNUMACH_NCPUS_OPTION) $(GNUMACH_TICKLESS_OPTION) $(GNUMACH_DEVICE_DRIVERS_OPTION) && \
 	    PATH=$(PREFIX)/bin:$$PATH make -j$(NPROC)
 	@echo "=== gate: gnumach kernel ==="
 	grep -q '^CC = $(PREFIX)/bin/x86_64-gnu-gcc$$' $(BUILD)/gnumach-kernel/Makefile || { echo "gnumach-kernel: Makefile did not record the cross compiler" >&2; exit 1; }
@@ -361,7 +370,7 @@ hurd: mig glibc
 # (e33aa5fd) adds the machuser/hurduser libraries that backend needs.
 # zlib is disabled: the translator does not read compressed pci.ids, and the
 # host's zlib is a Linux build that must not end up in a Hurd binary.
-libpciaccess: hurd
+libpciaccess:
 	@command -v meson >/dev/null 2>&1 || { \
 	    echo "libpciaccess: meson is required on the host"; exit 1; \
 	}
@@ -382,6 +391,21 @@ libpciaccess: hurd
 	    meson compile -C $(BUILD)/libpciaccess/build && \
 	    meson install -C $(BUILD)/libpciaccess/build && \
 	    rm -rf $(BUILD)/libpciaccess; \
+	fi
+	# Also install a static libpciaccess.a so virtio-blk can link fully static.
+	@if ! ls $(PREFIX)/lib/libpciaccess.a >/dev/null 2>&1; then \
+	    rm -rf $(BUILD)/libpciaccess-static && \
+	    mkdir -p $(BUILD)/libpciaccess-static/build && \
+	    sed -e "s|@PREFIX@|$(PREFIX)|g" $(REPO_ROOT)/toolchain/cross-gnu.ini.in \
+	        > $(BUILD)/libpciaccess-static/cross.ini && \
+	    meson setup $(BUILD)/libpciaccess-static/build $(REPO_ROOT)/3p/libpciaccess \
+	        --cross-file $(BUILD)/libpciaccess-static/cross.ini \
+	        -Dzlib=disabled -Dprefix=$(PREFIX) -Dlibdir=lib \
+	        -Ddefault_library=static && \
+	    meson compile -C $(BUILD)/libpciaccess-static/build && \
+	    cp $(BUILD)/libpciaccess-static/build/src/libpciaccess.a \
+	        $(PREFIX)/lib/libpciaccess.a && \
+	    rm -rf $(BUILD)/libpciaccess-static; \
 	fi
 	@echo "=== gate: libpciaccess ==="
 	ls $(PREFIX)/lib/libpciaccess.so $(PREFIX)/include/pciaccess.h \
@@ -439,6 +463,41 @@ libirqhelp: hurd mig
 	@echo "=== gate: libirqhelp ==="
 	ls $(PREFIX)/lib/libirqhelp.so $(PREFIX)/include/hurd/irqhelp.h >/dev/null
 
+# libmachdev is the Mach device emulation library behind the bootstrap
+# servers (rumpdisk, pci-arbiter, acpi) and now virtio-blk.static: it
+# implements the bootstrap protocol (machdev_trivfs_init resumes the
+# next task, fsys_getpriv fetches the privileged ports, the translator
+# devnode install) and the device_open demux over emulation ops.  The
+# virtio repo's static link needs libmachdev.a plus its headers
+# (libmachdev/machdev.h et al) installed in the prefix, so this follows
+# the libtrivfs recipe: configure the 3p/hurd copy out-of-tree, build
+# the dependency libs, then build and install libmachdev.
+libmachdev: hurd libtrivfs
+	@if ls $(PREFIX)/lib/libmachdev.a >/dev/null 2>&1; then \
+	    echo "(skipping: libmachdev already installed)"; \
+	else \
+	    rm -rf $(BUILD)/machdev-src $(BUILD)/machdev && \
+	    cp -a $(REPO_ROOT)/3p/hurd $(BUILD)/machdev-src && \
+	    cd $(BUILD)/machdev-src && \
+	    sed -i -e '/^if test "x$$cross_compiling" = "xyes"; then$$/,/^fi$$/d' configure.ac && \
+	    autoreconf -i && \
+	    export PATH=$(PREFIX)/bin:$$PATH && \
+	    mkdir -p $(BUILD)/machdev && cd $(BUILD)/machdev && \
+	    CC=$(PREFIX)/bin/x86_64-gnu-gcc MIG=$(PREFIX)/bin/mig \
+	    CPPFLAGS="-I$(PREFIX)/include" LDFLAGS="-L$(PREFIX)/lib" CPATH=$(PREFIX)/include \
+	    $(BUILD)/machdev-src/configure \
+	        --host=x86_64-gnu --build=x86_64-pc-linux-gnu --prefix=$(PREFIX) \
+	        --without-parted --without-libtirpc --without-libdaemon \
+	        --without-rump --without-acpica --without-libcrypt --disable-profile && \
+	    for d in libshouldbeinlibc libihash libiohelp libports libpager libfshelp libtrivfs; do \
+	        make -C $$d; \
+	    done && \
+	    make -C libmachdev && \
+	    make -C libmachdev install; \
+	fi
+	@echo "=== gate: libmachdev ==="
+	ls $(PREFIX)/lib/libmachdev.a $(PREFIX)/include/hurd/machdev.h >/dev/null
+
 # storeio is not installed to the prefix by the `hurd` stage, so it has its
 # own target. It builds inside a configured out-of-tree Hurd tree (a
 # standalone `make -C 3p/hurd/storeio` fails: generated headers such as
@@ -464,19 +523,92 @@ storeio: hurd mig
 	        --without-rump --without-acpica --without-libcrypt --disable-profile && \
 	    sed -e 's/MASTER_HURD_VERSION/"$(shell sed -n "s/^package-version := //p" $(BUILD)/hurd/config.make)"/' \
 	        < $(BUILD)/hurd-src/version.h.in > $(BUILD)/hurd/version.h && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libshouldbeinlibc -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libihash -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libiohelp -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libports -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libpager -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libfshelp -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libnetfs -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libstore -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libhurdbugaddr -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C storeio storeio.static
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libshouldbeinlibc -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libihash -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libiohelp -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libports -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libpager -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libfshelp -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libnetfs -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libstore -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libhurdbugaddr -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C storeio storeio.static
 	@echo "=== gate: storeio ==="
 	file $(BUILD)/hurd/storeio/storeio.static
 	file $(BUILD)/hurd/storeio/storeio.static | grep -q 'for GNU/Hurd' || { echo "storeio: binary is not a GNU/Hurd ELF" >&2; exit 1; }
+
+# hurd-servers builds the Hurd servers and translators out of a copy of
+# 3p/hurd, without installing to the prefix (installationdir is absolute,
+# so DESTDIR prepends to an absolute path and produces a wrong nested
+# path).  Binaries are read straight out of the out-of-tree build tree at
+# $(BUILD)/hurd-servers/<subdir>/ (prefer <target>.static where it
+# exists, falling back to <target>).
+# Depends on hurd and mig for installed libraries and the MIG stub
+# compiler.  Libs are built in dependency order (as storeio does):
+#   libshouldbeinlibc -> libihash -> libiohelp -> libports -> libpager ->
+#   libfshelp -> libnetfs -> libstore -> libhurdbugaddr,
+#   plus libtrivfs libirqhelp for translators.
+hurd-servers: hurd mig
+	rm -rf $(BUILD)/hurd-servers-src $(BUILD)/hurd-servers && \
+	cp -a $(REPO_ROOT)/3p/hurd $(BUILD)/hurd-servers-src && \
+	find $(BUILD)/hurd-servers-src \( -name '*.a' -o -name '*.o' \) -delete && \
+	mkdir -p $(BUILD)/hurd-servers-src/include/hurd && \
+	shopt -s nullglob && \
+	for d in $(BUILD)/hurd-servers-src/*/; do \
+	    [ "$$d" = "$(BUILD)/hurd-servers-src/include/" ] && continue; \
+	    d_base=$$(basename $$d); \
+	    for h in $$d*.h; do \
+	        b=$$(basename $$h); \
+	        # Expose headers the prefix does not already provide, so the \
+	        # in-place build never shadows consistent prefix headers.  Flat \
+	        # (installhdrsubdir=., e.g. libps/ps.h) and <hurd/foo.h> \
+	        # locations are both covered.  Never clobber a real header already \
+	        # copied into the source tree (e.g. include/pids.h). \
+	        if [ ! -f $(BUILD)/hurd-servers-src/include/$$b ] \
+	            && [ ! -f $(PREFIX)/include/$$b ]; then \
+	            ln -sf ../$$d_base/$$b $(BUILD)/hurd-servers-src/include/$$b; \
+	        fi; \
+	        if [ ! -f $(PREFIX)/include/hurd/$$b ]; then \
+	            ln -sf ../../$$d_base/$$b $(BUILD)/hurd-servers-src/include/hurd/$$b; \
+	        fi; \
+	    done; \
+	done && \
+	cd $(BUILD)/hurd-servers-src && \
+	sed -i -e '/^if test "x$$cross_compiling" = "xyes"; then$$/,/^fi$$/d' configure.ac && \
+	autoreconf -i && \
+	mkdir -p $(BUILD)/hurd-servers && cd $(BUILD)/hurd-servers && \
+	PATH=$(PREFIX)/bin:$$PATH \
+	CC=$(PREFIX)/bin/x86_64-gnu-gcc MIG=$(PREFIX)/bin/mig \
+	CPPFLAGS="-I$(PREFIX)/include" LDFLAGS="-L$(PREFIX)/lib" CPATH=$(PREFIX)/include \
+	CFLAGS="$(CFLAGS)" \
+	$(BUILD)/hurd-servers-src/configure \
+	        --host=x86_64-gnu --build=x86_64-pc-linux-gnu --prefix=$(PREFIX) \
+	        --without-parted --without-libtirpc --without-libdaemon \
+	        --without-rump --without-acpica --without-libcrypt --disable-profile && \
+	    sed -e 's/MASTER_HURD_VERSION/"$(shell sed -n "s/^package-version := //p" $(BUILD)/hurd-servers/config.make)"/' \
+	        < $(BUILD)/hurd-servers-src/version.h.in > $(BUILD)/hurd-servers/version.h && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libshouldbeinlibc -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libihash -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libps -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libiohelp -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libports -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libcons -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libpipe -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libpager -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libfshelp -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libnetfs -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libstore -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libdiskfs -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libhurdbugaddr -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libtrivfs -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libirqhelp -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libbpf -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libftpconn -j$(NPROC) && \
+	    for d in $(HURD_SERVERS_SUBDIRS); do \
+	        PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C $$d LDLIBS="-lpthread -lhurduser -lmachuser" -j$(NPROC) || exit 1; \
+	    done
+	@echo "=== gate: hurd-servers ==="
+	file $(BUILD)/hurd-servers/ext2fs/ext2fs
 
 # 9pfs calls two RPC stubs directly: exec_exec_paths (file-exec-paths.c,
 # from libhurduser) and mach_port_move_member (io-reauthenticate.c, from
@@ -517,7 +649,17 @@ VIRTIO_MAKEFLAGS = \
     $(VIRTIO_COMMON_FLAGS) \
     HURD_PREFIX=$(PREFIX) \
     HURD_SRC=$(REPO_ROOT)/3p/hurd \
+    CFLAGS="$(CFLAGS)" \
     LIBS="shouldbeinlibc ihash ports iohelp fshelp trivfs pciaccess hurduser machuser irqhelp"
+
+# Hurd servers/translators to ship in a vm image (subdirs of 3p/hurd).
+# Must mirror the top-level Makefile's HURD_SERVERS_SUBDIRS default.
+# Excludes daemons and trans, which use makemode := servers (multiple
+# binaries per dir) and don't fit the single-binary-per-dir loop.
+HURD_SERVERS_SUBDIRS ?= auth proc exec term ext2fs tmpfs fatfs \
+	storeio pfinet console init devnode pflocal boot \
+	hostmux usermux ftpfs shutdown rtc \
+	eth-multiplexer
 
 virtio-9p: hurd libpciaccess libtrivfs libirqhelp
 	$(MAKE) -C $(VIRTIO_DIR) clean
@@ -545,6 +687,56 @@ virtio-blk: hurd libpciaccess libirqhelp
 	@echo "=== gate: virtio-blk ==="
 	file $(VIRTIO_DIR)/virtio-blk
 	file $(VIRTIO_DIR)/vblk-client
+
+# Static build of virtio-blk: links all Hurd libs (including libpciaccess.a)
+# into a single self-contained binary named virtio-blk.static, suitable for
+# the vm image where dynamic library paths may not be set up.
+# Compiles objects via the repo Makefile, then links manually with -static and
+# --start-group/--end-group to break circular static-archive references
+# between libmachdev, libtrivfs, libports, libiohelp, libfshelp and
+# libshouldbeinlibc.
+# The static binary serves the bootstrap chain (--next-task) and --serve
+# through libmachdev (the rumpdisk pattern); its virtio-blk-machdev.o
+# replaces the libports translator objects (virtio-blk-serve.o,
+# virtio-serve.o, deviceServer.o, notifyServer.o), which define the same
+# trivfs hooks and ds_device_* symbols as libmachdev and cannot be linked
+# beside it.  The dynamic virtio-blk keeps that libports path.
+# The static libraries for shouldbeinlibc, ihash, ports, iohelp, fshelp,
+# trivfs, machdev, pciaccess, hurduser, machuser and irqhelp must be
+# pre-installed in $(PREFIX)/lib (built by the hurd/libtrivfs/libmachdev/
+# libirqhelp/libpciaccess targets). The pin in 3p/hurd blocks those targets
+# here, so we check explicitly instead of declaring a make dependency.
+virtio-blk-static: libmachdev libpciaccess
+	$(MAKE) -C $(VIRTIO_DIR) clean
+	$(MAKE) -C $(VIRTIO_DIR) virtio-blk $(VIRTIO_MAKEFLAGS)
+	$(MAKE) -C $(VIRTIO_DIR) virtio-blk-machdev.o $(VIRTIO_MAKEFLAGS)
+	@missing=; \
+	for lib in shouldbeinlibc ihash ports iohelp fshelp trivfs machdev pciaccess hurduser machuser irqhelp; do \
+	    if [ ! -f "$(PREFIX)/lib/lib$${lib}.a" ]; then \
+	        missing="$$missing lib$${lib}.a"; \
+	    fi; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	    echo "virtio-blk-static: missing static libraries:$$missing" >&2; \
+	    echo "  Build them first (e.g. make -C toolchain hurd libtrivfs libmachdev libirqhelp libpciaccess)" >&2; \
+	    exit 1; \
+	fi
+	$(PREFIX)/bin/x86_64-gnu-gcc -static \
+	    $(VIRTIO_DIR)/virtio-blk.o \
+	    $(VIRTIO_DIR)/virtio-blk-dev.o \
+	    $(VIRTIO_DIR)/virtio-blk-req.o \
+	    $(VIRTIO_DIR)/virtio-blk-hurd.o \
+	    $(VIRTIO_DIR)/virtio-blk-machdev.o \
+	    $(VIRTIO_DIR)/virtio-pool.o \
+	    $(VIRTIO_DIR)/virtio-pci.o \
+	    $(VIRTIO_DIR)/virtio-queue.o \
+	    -o $(VIRTIO_DIR)/virtio-blk.static -pthread \
+	    -Wl,--start-group \
+	    -lmachdev -lshouldbeinlibc -lihash -lports -liohelp -lfshelp \
+	    -ltrivfs -lpciaccess -lhurduser -lmachuser -lirqhelp \
+	    -Wl,--end-group
+	@echo "=== gate: virtio-blk-static ==="
+	file $(VIRTIO_DIR)/virtio-blk.static
 
 # Same build and gate shape as virtio-blk: the repo Makefile's default
 # target already builds the net driver, so this names the binary the

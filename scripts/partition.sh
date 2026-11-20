@@ -18,9 +18,20 @@
 # when the image has no partition table or no partition with that number.
 partition_offset() {
     local image="$1" number="$2" start
+    # Partition numbers are 1-indexed; 0 (or negative) means "all partitions"
+    # to partx and would return multiple start sectors.
+    if [[ ! "$number" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Invalid partition number: $number (must be a positive integer)" >&2
+        return 1
+    fi
     # partx exits 0 with empty output when the partition does not exist,
-    # so the empty check is part of the failure test.
-    if ! start="$(partx -g -n "$number" -o START "$image" 2>/dev/null)" || [[ -z "$start" ]]; then
+    # so the empty check is part of the failure test. partx may print a
+    # header line on some util-linux versions, so take only the last token
+    # (the start sector) and reject anything that is not a single integer.
+    if ! start="$(partx -g -n "$number" -o START "$image" 2>/dev/null | tail -n 1)" || [[ -z "$start" ]]; then
+        return 1
+    fi
+    if [[ ! "$start" =~ ^[0-9]+$ ]]; then
         return 1
     fi
     echo $(( start * 512 ))
