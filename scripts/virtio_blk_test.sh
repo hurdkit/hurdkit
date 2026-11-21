@@ -64,7 +64,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # (base -> accounts -> packages) automatically when it is missing or
 # stale; standalone runs can point BASE_IMG anywhere.
 BASE_IMG="${BASE_IMG:-${REPO_ROOT}/img/hurd.packages.qcow2}"
-VIRTIO_DIR="${VIRTIO_DIR:-${HOME}/src/virtio-1}"
+VIRTIO_DIR="${VIRTIO_DIR:-${HOME}/src/virtio}"
 VIRTIO_BLK_BIN="${VIRTIO_BLK_BIN:-${VIRTIO_DIR}/virtio-blk}"
 VBLK_CLIENT_BIN="${VBLK_CLIENT_BIN:-${VIRTIO_DIR}/vblk-client}"
 SSH_PORT="${SSH_PORT:-2222}"
