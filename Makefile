@@ -109,7 +109,7 @@ LOCK_FILE     := $(IMG_DIR)/.build.lock
 .PHONY: virtio-blk virtio-blk-test virtio-net virtio-net-test
 .PHONY: virtio-net-image virtio-net-connectivity-test
 .PHONY: virtio-bench-image virtio-bench-vnet-image virtio-bench
-.PHONY: run-smp-tests run-up-tests smp-image up-image
+.PHONY: run-smp-tests run-up-tests smp-image up-image clock-pause-test
 .PHONY: virtio-clean gnumach-clean
 
 # The default builds the whole image pipeline, with every intermediate
@@ -580,6 +580,15 @@ run-up-tests:
 		SMP_CPU_COUNT="$(UP_CPU_COUNT)" \
 		SMP_UP=1 \
 		bash scripts/run_smp_tests.sh
+
+# Boot the staged SMP kernel image and pause the whole guest from the host
+# (SIGSTOP/SIGCONT of its QEMU) while tests/hurd/clock-pause.c reads the
+# clocks in it (see scripts/clock_pause_test.sh).  CLOCK_IMG and CLOCK_CPUS
+# boot another kernel image, e.g. the UP one with 1 vCPU.
+clock-pause-test:
+	$(MKDIR_P) $(TMP_DIR)
+	SSH_HOST="$(SSH_HOST)" SSH_PORT="$(SSH_PORT)" REUSE="$(REUSE)" \
+		bash scripts/clock_pause_test.sh
 verify-vm: fetch-3p    ; $(MAKE) -C toolchain verify-vm
 
 # Print resolved configuration values useful for debugging.
