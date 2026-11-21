@@ -392,7 +392,8 @@ virtio-blk-test: virtio-blk $(TEST_IMG)
 # --status, the Phase 1/2 selftest (handshake, status flavors, write
 # policy, NET_RCV_MSG delivery), the raw TX/RX traffic probe, a daemon
 # smoke test and a Mach-device translator smoke test, plus the no-device
-# negative boot (see scripts/virtio_net_test.sh).
+# negative boot (see scripts/virtio_net_test.sh).  MODE=stall runs the
+# stalled-backend phase instead.
 virtio-net-test: virtio-net $(TEST_IMG)
 	$(MKDIR_P) $(TMP_DIR)
 	SSH_HOST="$(SSH_HOST)" SSH_PORT="$(SSH_PORT)" REUSE="$(REUSE)" \
