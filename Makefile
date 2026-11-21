@@ -74,6 +74,8 @@ VIRTIO_DIR    ?= $(HOME)/src/virtio
 VIRTIO_NET_DIR ?= $(VIRTIO_DIR)
 VNET_IMG       ?= $(IMG_DIR)/hurd.vnet.qcow2
 VIRTIO_9P_BIN := $(VIRTIO_DIR)/virtio-9p
+# The standalone repo of the exFAT translator, overridable like VIRTIO_DIR.
+EXFATFS_DIR   ?= $(HOME)/src/exfatfs
 # The gnumach source checkout used for the kernel build. Override this to
 # build a worktree instead of the pinned 3p checkout.
 GNUMACH_DIR   ?= 3p/gnumach
@@ -111,6 +113,7 @@ LOCK_FILE     := $(IMG_DIR)/.build.lock
 .PHONY: virtio-bench-image virtio-bench-vnet-image virtio-bench
 .PHONY: run-smp-tests run-up-tests smp-image up-image
 .PHONY: virtio-clean gnumach-clean
+.PHONY: fs-translators exfatfs exfatfs-clean exfatfs-test
 
 # The default builds the whole image pipeline, with every intermediate
 # exposed as its own qcow2 (see the stage rules below).
@@ -347,6 +350,17 @@ virtio-blk: fetch-3p    ; $(MAKE) -C toolchain virtio-blk VIRTIO_DIR=$(VIRTIO_DI
 virtio-net: fetch-3p    ; $(MAKE) -C toolchain virtio-net VIRTIO_DIR=$(VIRTIO_NET_DIR)
 virtio-clean: fetch-3p ; $(MAKE) -C toolchain virtio-clean VIRTIO_DIR=$(VIRTIO_DIR)
 storeio: fetch-3p       ; $(MAKE) -C toolchain storeio
+# HURD_TREE: the Hurd source tree the in-tree filesystem translators are
+# built from.  FS: the filesystems to build and test; each <fs> other than
+# exfat needs the translator <fs>fs in HURD_TREE.  exfatfs comes from its
+# own repo, EXFATFS_DIR.  FS=fat builds and tests the fatfs control alone.
+HURD_TREE     ?= 3p/hurd
+FS            ?= fat exfat
+FS_IN_TREE    := $(filter-out exfat,$(FS))
+fs-translators: fetch-3p ; $(MAKE) -C toolchain fs-translators \
+	HURD_TREE=$(abspath $(HURD_TREE)) FS_TRANSLATORS="$(addsuffix fs,$(FS_IN_TREE))"
+exfatfs: fetch-3p ; $(MAKE) -C toolchain exfatfs EXFATFS_DIR=$(abspath $(EXFATFS_DIR))
+exfatfs-clean: fetch-3p ; $(MAKE) -C toolchain exfatfs-clean EXFATFS_DIR=$(abspath $(EXFATFS_DIR))
 
 # Boot the guest with a host directory shared through QEMU's virtio-9p
 # device and run the translator test matrix: the device selftest, the
@@ -399,6 +413,23 @@ virtio-net-test: virtio-net $(TEST_IMG)
 		VIRTIO_DIR="$(VIRTIO_NET_DIR)" MODE="$(MODE)" \
 		BASE_IMG="$(abspath $(TEST_IMG))" \
 		bash scripts/virtio_net_test.sh
+
+# Build fatfs from HURD_TREE and exfatfs from EXFATFS_DIR, boot the guest and run the
+# filesystem matrix: each image mounted with its translator in the guest
+# and compared with the Linux kernel driver's view of it, then exFAT
+# writes, checked by fsck.exfat and a Linux readback (see
+# scripts/exfatfs_test.sh and skills/FILESYSTEM_TESTING.md).  Needs sudo
+# for loop mounts.  FS=fat runs only the fatfs control.  A failed run
+# leaves its guest running; REUSE=1 reruns the checks against it.
+exfatfs-test: $(if $(FS_IN_TREE),fs-translators) $(if $(filter exfat,$(FS)),exfatfs) $(TEST_IMG)
+	$(MKDIR_P) $(TMP_DIR)
+	SSH_HOST="$(SSH_HOST)" SSH_PORT="$(SSH_PORT)" REUSE="$(REUSE)" \
+		SSH_KEY_DIR="$(abspath $(SSH_KEY_DIR))" \
+		BASE_IMG="$(abspath $(TEST_IMG))" \
+		TRANSLATOR_DIR="$(BUILD)/hurd-translators" \
+		EXFATFS_STATIC="$(abspath $(EXFATFS_DIR))/exfatfs.static" \
+		FS="$(FS)" EXFAT_WRITE="$(EXFAT_WRITE)" \
+		bash scripts/exfatfs_test.sh
 
 # Build a guest image whose primary network interface is virtio-net (replacing
 # e1000): stages the virtio-net binary and a matching /etc/network/interfaces

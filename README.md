@@ -78,7 +78,7 @@ single-image flow in `scripts/provision_base.sh`):
 * optionally runs `apt-get update` and `apt-get upgrade` when `RUN_APT_UPGRADE=1` (off by default),
 * repairs the ext2 filesystem offline afterward (ext2 has no journal).
 
-The test harnesses (`make virtio-test`, `make virtio-balloon-test`) boot
+The test harnesses (`make virtio-test`, `make virtio-balloon-test`, `make exfatfs-test`) boot
 from a CoW snapshot of the packages image (`qemu-img create`, not
 `convert`), which is the stage that carries both the SSH keys and gdb.
 
@@ -94,11 +94,12 @@ scripts/              # prepare_base.sh, provision_base.sh, provision_guest.py, 
 skills/BOOT.md        # detailed boot/provisioning skill
 skills/CROSS_TESTING.md  # test cross-compiled drivers inside the Hurd VM
 skills/CROSSCOMPILING.md  # cross-compiling with the toolchain (gnumach example, cross nm/objdump/readelf)
+skills/FILESYSTEM_TESTING.md  # test disk filesystem translators (fatfs, exfatfs) against Linux
 img/                  # downloaded image, base image, keys (git ignored)
 3p/                   # pinned 3p source checkouts (git ignored)
 ```
 
-See `toolchain/README.md` for toolchain build details, `skills/BOOT.md` for the boot/provisioning procedure, `skills/CROSSCOMPILING.md` for cross-compiling (including the gnumach kernel and the cross `nm`/`objdump`/`readelf` workflow), and `skills/CROSS_TESTING.md` for testing cross-compiled drivers in the guest.
+See `toolchain/README.md` for toolchain build details, `skills/BOOT.md` for the boot/provisioning procedure, `skills/CROSSCOMPILING.md` for cross-compiling (including the gnumach kernel and the cross `nm`/`objdump`/`readelf` workflow), `skills/CROSS_TESTING.md` for testing cross-compiled drivers in the guest, and `skills/FILESYSTEM_TESTING.md` for `make exfatfs-test`, which checks the fatfs and exfatfs translators against the Linux kernel driver and `fsck.exfat`.
 
 ## Benchmarks
 

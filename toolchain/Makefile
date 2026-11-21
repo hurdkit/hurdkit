@@ -30,7 +30,8 @@ GCC_VER      := 15.3.0
 	mig hurd hurd-headers libpciaccess libtrivfs libirqhelp storeio \
 	virtio-9p virtio-balloon virtio-blk virtio-net 9pfs verify-vm \
 	clean tooldir 3p-pin glibc-rebuild \
-	virtio-clean
+	virtio-clean \
+	libdiskfs fs-translators exfatfs exfatfs-clean
 
 # The verified 3p checkouts, pinned to exact SHAs (see
 # stuff/crosscompile_plan.md, "3p source pins"). The shared 3p checkout is
@@ -439,44 +440,115 @@ libirqhelp: hurd mig
 	@echo "=== gate: libirqhelp ==="
 	ls $(PREFIX)/lib/libirqhelp.so $(PREFIX)/include/hurd/irqhelp.h >/dev/null
 
+# libdiskfs and libstore are not installed by the `hurd` stage either.  The
+# standalone exfatfs translator links them from the prefix, with
+# libhurdbugaddr for its --help bug address.  libstore's install includes
+# the libstore_<type>.a archives that select the store types a static
+# filesystem links.  libstore has gunzip and bunzip2 only if zlib and
+# libbz2 are in the prefix when it is configured.
+libdiskfs: hurd mig
+	@if ls $(PREFIX)/lib/libdiskfs.so >/dev/null 2>&1; then \
+	    echo "(skipping: libdiskfs already installed)"; \
+	else \
+	    $(call hurd-configure,$(REPO_ROOT)/3p/hurd,$(BUILD)/hurd-diskfs) && \
+	    for d in libhurdbugaddr libshouldbeinlibc libihash libiohelp libports \
+	             libpager libfshelp libstore libdiskfs; do \
+	        make -C $$d -j$(NPROC) || exit 1; \
+	    done && \
+	    for d in libhurdbugaddr libstore libdiskfs; do \
+	        make -C $$d install || exit 1; \
+	    done; \
+	fi
+	@echo "=== gate: libdiskfs ==="
+	ls $(PREFIX)/lib/libdiskfs.a $(PREFIX)/lib/libstore.a \
+	    $(PREFIX)/lib/libstore_device.a $(PREFIX)/lib/libhurdbugaddr.a \
+	    $(PREFIX)/include/hurd/diskfs.h $(PREFIX)/include/hurd/store.h >/dev/null
+
+# Copy a Hurd source tree and configure the copy out of tree for x86_64-gnu,
+# the way the `hurd` stage does: $(1) is the source tree, $(2) the build
+# directory, and the copy lands in $(2)-src.  Both are recreated on every
+# call, so a build never depends on what an earlier one left behind.  The
+# translators built below need generated headers (libstore/store.h,
+# libnetfs/fs_S.h, version.h) that only a configured tree has; a standalone
+# `make -C 3p/hurd/<dir>` fails without them.  Ends inside $(2) with PATH
+# and CPATH pointing at the prefix.
+define hurd-configure
+rm -rf $(2)-src $(2) && \
+	cp -a $(1) $(2)-src && \
+	sed -i -e '/^if test "x$$cross_compiling" = "xyes"; then$$/,/^fi$$/d' $(2)-src/configure.ac && \
+	(cd $(2)-src && autoreconf -i) && \
+	mkdir -p $(2) && cd $(2) && \
+	export PATH=$(PREFIX)/bin:$$PATH CPATH=$(PREFIX)/include && \
+	CC=$(PREFIX)/bin/x86_64-gnu-gcc MIG=$(PREFIX)/bin/mig \
+	CPPFLAGS="-I$(PREFIX)/include" LDFLAGS="-L$(PREFIX)/lib" \
+	$(2)-src/configure \
+	    --host=x86_64-gnu --build=x86_64-pc-linux-gnu --prefix=$(PREFIX) \
+	    --without-parted --without-libtirpc --without-libdaemon \
+	    --without-rump --without-acpica --without-libcrypt --disable-profile && \
+	make version.h
+endef
+
+# Fail unless each argument is a GNU/Hurd ELF.
+define hurd-elf-gate
+for f in $(1); do \
+	    file $$f; \
+	    file $$f | grep -q 'for GNU/Hurd' || { echo "$$f: not a GNU/Hurd ELF" >&2; exit 1; }; \
+	done
+endef
+
 # storeio is not installed to the prefix by the `hurd` stage, so it has its
-# own target. It builds inside a configured out-of-tree Hurd tree (a
-# standalone `make -C 3p/hurd/storeio` fails: generated headers such as
-# libstore/store.h, libnetfs/fs_S.h, version.h and libhurdbugaddr.a are
-# missing).  Libs are built in dependency order:
-#   libshouldbeinlibc -> libihash -> libiohelp -> libports -> libpager ->
-#   libfshelp -> libnetfs -> libstore -> libhurdbugaddr -> storeio.
+# own target.  Libs are built in dependency order.
 # The hurdkit-branch fix (commit e07e9590) fixes the --no-cache byte-to-block
 # conversion (<< instead of >>) in storeio/dev.c.
 storeio: hurd mig
-	rm -rf $(BUILD)/hurd-src $(BUILD)/hurd && \
-	cp -a $(REPO_ROOT)/3p/hurd $(BUILD)/hurd-src && \
-	cd $(BUILD)/hurd-src && \
-	sed -i -e '/^if test "x$$cross_compiling" = "xyes"; then$$/,/^fi$$/d' configure.ac && \
-	autoreconf -i && \
-	mkdir -p $(BUILD)/hurd && cd $(BUILD)/hurd && \
-	    PATH=$(PREFIX)/bin:$$PATH \
-	    CC=$(PREFIX)/bin/x86_64-gnu-gcc MIG=$(PREFIX)/bin/mig \
-	    CPPFLAGS="-I$(PREFIX)/include" LDFLAGS="-L$(PREFIX)/lib" CPATH=$(PREFIX)/include \
-	    $(BUILD)/hurd-src/configure \
-	        --host=x86_64-gnu --build=x86_64-pc-linux-gnu --prefix=$(PREFIX) \
-	        --without-parted --without-libtirpc --without-libdaemon \
-	        --without-rump --without-acpica --without-libcrypt --disable-profile && \
-	    sed -e 's/MASTER_HURD_VERSION/"$(shell sed -n "s/^package-version := //p" $(BUILD)/hurd/config.make)"/' \
-	        < $(BUILD)/hurd-src/version.h.in > $(BUILD)/hurd/version.h && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libshouldbeinlibc -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libihash -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libiohelp -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libports -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libpager -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libfshelp -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libnetfs -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libstore -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C libhurdbugaddr -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH make -C storeio storeio.static
+	$(call hurd-configure,$(REPO_ROOT)/3p/hurd,$(BUILD)/hurd) && \
+	for d in libshouldbeinlibc libihash libiohelp libports libpager libfshelp \
+	         libnetfs libstore libhurdbugaddr; do \
+	    make -C $$d -j$(NPROC) || exit 1; \
+	done && \
+	make -C storeio storeio.static
 	@echo "=== gate: storeio ==="
-	file $(BUILD)/hurd/storeio/storeio.static
-	file $(BUILD)/hurd/storeio/storeio.static | grep -q 'for GNU/Hurd' || { echo "storeio: binary is not a GNU/Hurd ELF" >&2; exit 1; }
+	$(call hurd-elf-gate,$(BUILD)/hurd/storeio/storeio.static)
+
+# Static libdiskfs translators from HURD_TREE (default: the pinned 3p/hurd),
+# for the filesystem harness (scripts/exfatfs_test.sh).  Static, so they run
+# in the guest whatever Hurd libraries the Debian image ships.  The output
+# is $(BUILD)/hurd-translators/<name>/<name>.static.  exfatfs is not one of
+# them: it has its own repo and target (`exfatfs`, below).
+HURD_TREE      ?= $(REPO_ROOT)/3p/hurd
+FS_TRANSLATORS ?= fatfs
+# Checked when make reads this file, so a missing translator stops the
+# build before any stage runs rather than after the configure.
+ifneq ($(filter fs-translators,$(MAKECMDGOALS)),)
+FS_MISSING := $(strip $(foreach t,$(FS_TRANSLATORS),$(if $(wildcard $(abspath $(HURD_TREE))/$(t)/Makefile),,$(t))))
+ifneq ($(FS_MISSING),)
+$(error HURD_TREE=$(abspath $(HURD_TREE)) has no $(FS_MISSING) translator)
+endif
+endif
+fs-translators: hurd mig
+	$(call hurd-configure,$(abspath $(HURD_TREE)),$(BUILD)/hurd-translators) && \
+	for d in libhurdbugaddr libshouldbeinlibc libihash libiohelp libports \
+	         libpager libfshelp libstore libdiskfs; do \
+	    make -C $$d -j$(NPROC) || exit 1; \
+	done && \
+	for t in $(FS_TRANSLATORS); do make -C $$t -j$(NPROC) $$t.static || exit 1; done
+	@echo "=== gate: fs-translators ==="
+	$(call hurd-elf-gate,$(foreach t,$(FS_TRANSLATORS),$(BUILD)/hurd-translators/$(t)/$(t).static))
+
+# The exFAT translator lives in its own repo (exfatfs, the
+# standalone pattern of 3p/9pfs and the virtio drivers) and links libdiskfs
+# and libstore from the prefix.  EXFATFS_DIR selects which checkout is
+# built.  The harness takes exfatfs.static from it.
+EXFATFS_DIR ?= $(HOME)/src/exfatfs
+
+exfatfs: hurd mig libdiskfs
+	$(MAKE) -C $(EXFATFS_DIR) HURD_PREFIX=$(PREFIX)
+	@echo "=== gate: exfatfs ==="
+	$(call hurd-elf-gate,$(EXFATFS_DIR)/exfatfs.static)
+
+# Clean the exfatfs build artifacts in EXFATFS_DIR.
+exfatfs-clean:
+	$(MAKE) -C $(EXFATFS_DIR) clean
 
 # 9pfs calls two RPC stubs directly: exec_exec_paths (file-exec-paths.c,
 # from libhurduser) and mach_port_move_member (io-reauthenticate.c, from
