@@ -504,7 +504,7 @@ storeio: hurd mig
 # The driver build also needs the pinned Hurd source tree (for the
 # libports MIG headers and libbpf) and the install prefix; both are
 # passed explicitly so the virtio Makefile's defaults never apply here.
-VIRTIO_DIR ?= $(HOME)/src/virtio-1
+VIRTIO_DIR ?= $(HOME)/src/virtio
 # Cross-compile flags shared by the virtio drivers and 9pfs (both link the
 # cross prefix the same way). VIRTIO_MAKEFLAGS adds HURD_SRC/HURD_PREFIX on
 # top; 9pfs inlines these directly with its own LIBS and MIG overrides.
