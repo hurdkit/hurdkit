@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
-# mount_image.sh <img.qcow2> <mntpath> [partition]
+# mount_image.sh [--raw] <img.qcow2> <mntpath> [partition]
 #
-# Mount a qcow2 (or raw) disk image's partition to a directory without root
-# privileges, using the qemu-nbd + nbdfuse + fuse2fs chain described in
-# skills/BOOT.md ("Offline filesystem repair"):
+# Default mode: mount a qcow2 (or raw) disk image's partition to a directory
+# without root privileges, using the qemu-nbd + nbdfuse + fuse2fs chain
+# described in skills/BOOT.md ("Offline filesystem repair"):
 #
 #   qemu-nbd serves the image on a Unix socket
 #   nbdfuse exposes the served disk as a plain raw file
 #   fuse2fs mounts the ext2 partition (at its byte offset) to <mntpath>
+#
+# --raw mode: stop after nbdfuse and print the e2fsprogs target
+# ("<mntpath>/disk.raw?offset=<bytes>") as the last stdout line, so callers
+# can edit the filesystem offline with the debugfs/e2fsck unix_io interface
+# instead of the fuse2fs mount.  fuse2fs buffers writes in its own process
+# and daemonizes, so the recorded PID is not the daemon and a teardown can
+# discard its unflushed buffers; the unix_io tools fsync through the chain
+# and do not have that failure mode (fsck_qcow2.sh works this way).
 #
 # No loop device, no libguestfs, no root: only /dev/fuse is required.
 # The image stays read-only through the chain unless the guest wrote dirty
@@ -15,10 +23,10 @@
 #
 # The mount persists after this script exits. Unmount with:
 #
-#   fusermount -u <mntpath>
+#     fusermount -u <mntpath>
 #
 # and then stop the daemons whose PIDs are printed at mount time (and remove
-# the working directories they print).
+# the working directories they print), or with scripts/unmount_image.sh.
 #
 # Note: nbdfuse leaves its working directory non-writable (mode 000), so
 # logs and the PID file are kept in a separate directory that stays writable.
@@ -29,8 +37,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/partition.sh
 source "$SCRIPT_DIR/partition.sh"
 
-IMG="${1:?Usage: $0 <img.qcow2> <mntpath> [partition]}"
-MNTPATH="${2:?Usage: $0 <img.qcow2> <mntpath> [partition]}"
+RAW_MODE=0
+if [[ "${1:-}" == "--raw" ]]; then
+    RAW_MODE=1
+    shift
+fi
+
+IMG="${1:?Usage: $0 [--raw] <img.qcow2> <mntpath> [partition]}"
+MNTPATH="${2:?Usage: $0 [--raw] <img.qcow2> <mntpath> [partition]}"
 PARTITION="${3:-2}"
 
 if [[ ! -f "$IMG" ]]; then
@@ -38,12 +52,20 @@ if [[ ! -f "$IMG" ]]; then
     exit 1
 fi
 
-for tool in qemu-img qemu-nbd nbdfuse fuse2fs fusermount partx; do
+for tool in qemu-img qemu-nbd nbdfuse partx; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "$tool is required to mount the image" >&2
         exit 1
     fi
 done
+if (( ! RAW_MODE )); then
+    for tool in fuse2fs fusermount; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "$tool is required to mount the image" >&2
+            exit 1
+        fi
+    done
+fi
 
 mkdir -p "$MNTPATH"
 
@@ -55,11 +77,16 @@ MNTPATH="$(cd "$MNTPATH" && pwd)"
 # nbdfuse starts this directory becomes non-writable (mode 000), so nothing
 # is written to it afterwards.
 RUN_DIR="$(mktemp -d)"
+# In raw mode the nbdfuse file lives in the caller's directory so the
+# printed target and the breadcrumb stay valid after this script exits.
+RAW_FILE="$RUN_DIR/disk.raw"
+if (( RAW_MODE )); then
+    RAW_FILE="$MNTPATH/disk.raw"
+fi
 # LOG_DIR holds the daemon logs and the PID file; it stays writable so the
 # caller can inspect them and stop the daemons after unmounting.
 LOG_DIR="$(mktemp -d)"
 SOCKET="$RUN_DIR/nbd.sock"
-RAW_FILE="$RUN_DIR/disk.raw"
 QEMU_NBD_PID=""
 NBDFUSE_PID=""
 FUSE2FS_PID=""
@@ -129,6 +156,33 @@ fi
 # Byte offset of the partition inside the raw disk file.
 OFFSET="$(partition_offset "$RAW_FILE" "$PARTITION")"
 
+if (( RAW_MODE )); then
+    # The EXIT trap only leaves the daemons running when MOUNTED is set; in
+    # raw mode there is no mount, but the daemons must stay up for the
+    # debugfs/e2fsck caller, so mark the setup as complete.
+    MOUNTED=1
+    # Record the daemons so scripts/unmount_image.sh can stop them, and
+    # print the unix_io target for debugfs/e2fsck callers.
+    cat > "$LOG_DIR/pids" <<EOF
+qemu-nbd=$QEMU_NBD_PID
+nbdfuse=$NBDFUSE_PID
+EOF
+    MOUNT_INFO_DIR="${MOUNT_INFO_DIR:-/tmp/.mount_image}"
+    mkdir -p "$MOUNT_INFO_DIR"
+    MNTPATH_SAFE="${MNTPATH//\//_}"
+    cat > "$MOUNT_INFO_DIR/$MNTPATH_SAFE" <<EOF
+MNTPATH=$MNTPATH
+IMG=$IMG
+PARTITION=$PARTITION
+LOG_DIR=$LOG_DIR
+RUN_DIR=$RUN_DIR
+QEMU_NBD_PID=$QEMU_NBD_PID
+NBDFUSE_PID=$NBDFUSE_PID
+EOF
+    echo "$RAW_FILE?offset=$OFFSET"
+    exit 0
+fi
+
 # Mount the partition to <mntpath>. fakeroot lets a non-root reader see
 # root-owned files; offset seeks into the partition inside the raw file.
 fuse2fs -o offset="$OFFSET" -o fakeroot "$RAW_FILE" "$MNTPATH" > "$LOG_DIR/fuse2fs.log" 2>&1 &
@@ -155,6 +209,8 @@ fi
 
 # Keep RUN_DIR alive (it holds the socket and raw file the mount needs).
 # Record the daemons so the caller can stop them after unmounting.
+# fuse2fs daemonizes, so $! is the short-lived parent and NOT the daemon;
+# the recorded PID is best effort only (see the --raw mode note).
 cat > "$LOG_DIR/pids" <<EOF
 qemu-nbd=$QEMU_NBD_PID
 nbdfuse=$NBDFUSE_PID

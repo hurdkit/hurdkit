@@ -678,7 +678,14 @@ storeio: hurd mig parted
 #   libshouldbeinlibc -> libihash -> libiohelp -> libports -> libpager ->
 #   libfshelp -> libnetfs -> libstore -> libhurdbugaddr,
 #   plus libtrivfs libirqhelp for translators.
-hurd-servers: hurd mig
+# The tree is configured --with-parted (like the storeio target): GRUB
+# starts the static ext2fs with "-T typed part:2:device:wd0", and libstore
+# only registers the "part" store class when built with parted.  Without
+# it store_typed_open fails with EINVAL ("ext2fs: part:2:device:wd0:
+# Invalid argument") and the guest never mounts its root.  With
+# PARTED_LIBS set, boot_store_types gains "part", ext2fs.static links
+# libstore_part.a, and Makeconf's .static rule appends $(PARTED_LIBS).
+hurd-servers: hurd mig parted
 	rm -rf $(BUILD)/hurd-servers-src $(BUILD)/hurd-servers && \
 	cp -a $(REPO_ROOT)/3p/hurd $(BUILD)/hurd-servers-src && \
 	find $(BUILD)/hurd-servers-src \( -name '*.a' -o -name '*.o' \) -delete && \
@@ -713,7 +720,7 @@ hurd-servers: hurd mig
 	CFLAGS="$(CFLAGS)" \
 	$(BUILD)/hurd-servers-src/configure \
 	        --host=x86_64-gnu --build=x86_64-pc-linux-gnu --prefix=$(PREFIX) \
-	        --without-parted --without-libtirpc --without-libdaemon \
+	        --with-parted --without-libtirpc --without-libdaemon \
 	        --without-rump --without-acpica --without-libcrypt --disable-profile && \
 	    sed -e 's/MASTER_HURD_VERSION/"$(shell sed -n "s/^package-version := //p" $(BUILD)/hurd-servers/config.make)"/' \
 	        < $(BUILD)/hurd-servers-src/version.h.in > $(BUILD)/hurd-servers/version.h && \
@@ -735,10 +742,25 @@ hurd-servers: hurd mig
 	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libbpf -j$(NPROC) && \
 	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libftpconn -j$(NPROC) && \
 	    for d in $(HURD_SERVERS_SUBDIRS); do \
-	        PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C $$d LDLIBS="-lpthread -lhurduser -lmachuser" -j$(NPROC) || exit 1; \
-	    done
+	        if [ "$$d" = storeio ]; then \
+	            # The tree is --with-parted, so storeio compiles its own \
+	            # part.c and its dynamic link needs -lparted (Makeconf only \
+	            # appends PARTED_LIBS to .static links, and the command-line \
+	            # LDLIBS below would drop storeio's Makefile default). \
+	            PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C $$d \
+	                LDLIBS="-lpthread -lhurduser -lmachuser -lparted -luuid -ldl" -j$(NPROC) || exit 1; \
+	        else \
+	            PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C $$d LDLIBS="-lpthread -lhurduser -lmachuser" -j$(NPROC) || exit 1; \
+	        fi; \
+	    done && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C ext2fs ext2fs.static \
+	        LDLIBS="-lpthread -lhurduser -lmachuser" -j$(NPROC) || exit 1;
 	@echo "=== gate: hurd-servers ==="
 	file $(BUILD)/hurd-servers/ext2fs/ext2fs
+	file $(BUILD)/hurd-servers/ext2fs/ext2fs.static
+	$(PREFIX)/bin/x86_64-gnu-nm $(BUILD)/hurd-servers/ext2fs/ext2fs.static | \
+	    grep -q store_part_open && \
+	    echo "gate: ext2fs.static carries the parted partition store"
 
 # 9pfs calls two RPC stubs directly: exec_exec_paths (file-exec-paths.c,
 # from libhurduser) and mach_port_move_member (io-reauthenticate.c, from

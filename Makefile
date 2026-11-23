@@ -551,7 +551,7 @@ $(VIRTIO_DIR)/virtio-balloon:
 # variable it would override the Makeconf's "CFLAGS += ... $($*-CFLAGS)" in
 # the recursive builds, and the per-target flags (e.g. pflocal's
 # fsServer-CFLAGS) would be lost.
-$(BUILD)/hurd-servers/.stamp: $(HURD_SOURCES)
+$(BUILD)/hurd-servers/.stamp: $(HURD_SOURCES) toolchain/Makefile
 	CFLAGS="$(CFLAGS)" $(MAKE) -C toolchain hurd-servers HURD_SERVERS_SUBDIRS="$(HURD_SERVERS_SUBDIRS)"
 	touch $@
 
@@ -588,6 +588,11 @@ $(HURD_VM_IMG): $(TEST_IMG) scripts/provision_stage.sh scripts/provision_guest.p
 	# the image's unpatched libstore and lose the device fallback fix.
 	cp $(BUILD)/hurd/storeio/storeio.static $(HURD_OVERLAY_DIR)/hurd/storeio
 	chmod 755 $(HURD_OVERLAY_DIR)/hurd/storeio
+	# ext2fs.static is published under its own name so the guest can start
+	# it directly as /hurd/ext2fs.static (the overlay loop already installs
+	# it as /hurd/ext2fs).
+	cp $(BUILD)/hurd-servers/ext2fs/ext2fs.static $(HURD_OVERLAY_DIR)/hurd/ext2fs.static
+	chmod 755 $(HURD_OVERLAY_DIR)/hurd/ext2fs.static
 	# Virtio drivers and 9pfs translator.
 	cp $(VIRTIO_DIR)/virtio-balloon $(HURD_OVERLAY_DIR)/hurd/virtio-balloon
 	cp $(VIRTIO_DIR)/virtio-blk.static $(HURD_OVERLAY_DIR)/hurd/virtio-blk.static
