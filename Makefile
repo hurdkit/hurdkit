@@ -99,7 +99,8 @@ HURD_SERVERS_SUBDIRS  := auth proc exec term ext2fs tmpfs fatfs \
 	eth-multiplexer
 # Track source edits so the gnumach kernel and hurd-servers rebuilds
 # when the 3p trees change.
-HURD_SOURCES := $(shell find 3p/hurd -type f -not -path '*/.git/*' 2>/dev/null)
+HURD_SOURCES := $(shell find 3p/hurd -type f -not -path '*/.git/*' \
+	-not -name '*.o' -not -name '*.a' -not -name '*.so' -not -name '*.so.*' 2>/dev/null)
 
 # Number of vCPUs for the SMP test harness (default 2; must equal
 # GNUMACH_NCPUS for the SMP kernel build or gnumach's ACPI parse aborts).
@@ -462,13 +463,12 @@ virtio-net-connectivity-test: virtio-net-image
 		bash scripts/virtio_net_connectivity_test.sh
 
 # Build a guest image carrying the hurdkit-branch gnumach (CUSTOM_KERNEL)
-# and the fixed storeio from commit e07e9590 (CUSTOM_OVERLAY).  The fixed
-# storeio is staged as /hurd/storeio-FIXED, never over /hurd/storeio: the
-# cross build runs --without-parted, so its libstore has no `part` class
-# and it cannot serve the `part:2:device:...` typed stores behind the
-# partition nodes (/dev/wd0s2) that fsck opens at boot.  The benchmark's
-# ensure_store_node uses /hurd/storeio-fixed; the Debian storeio keeps
-# serving every system node.
+# and the static storeio from the fix-pfinet branch (CUSTOM_OVERLAY).  The
+# storeio is staged as /hurd/storeio-fixed, never over /hurd/storeio, so the
+# benchmark can exercise it while Debian's storeio keeps serving system
+# nodes.  The static binary includes both the device fallback fix and the
+# parted-backed "part" store class required by the partition nodes fsck opens
+# at boot.
 virtio-bench-image: $(IMG_DIR)/hurd.bench.qcow2
 
 $(IMG_DIR)/hurd.bench.qcow2: $(TEST_IMG) scripts/provision_stage.sh scripts/provision_guest.py $(BUILD)/hurd/storeio/storeio.static $(VIRTIO_DIR)/virtio-9p 3p/9pfs/9pfs $(BUILD)/gnumach-kernel/gnumach
@@ -547,8 +547,12 @@ $(VIRTIO_DIR)/virtio-balloon:
 # Build the vm image: hurd.vm.qcow2 layered on hurd.packages.qcow2, shipping
 # the tickless gnumach kernel, hurd servers/translators, all four virtio
 # drivers and the 9pfs translator.
+# CFLAGS must reach the toolchain through the environment: as a command-line
+# variable it would override the Makeconf's "CFLAGS += ... $($*-CFLAGS)" in
+# the recursive builds, and the per-target flags (e.g. pflocal's
+# fsServer-CFLAGS) would be lost.
 $(BUILD)/hurd-servers/.stamp: $(HURD_SOURCES)
-	$(MAKE) -C toolchain hurd-servers HURD_SERVERS_SUBDIRS="$(HURD_SERVERS_SUBDIRS)" CFLAGS="$(CFLAGS)"
+	CFLAGS="$(CFLAGS)" $(MAKE) -C toolchain hurd-servers HURD_SERVERS_SUBDIRS="$(HURD_SERVERS_SUBDIRS)"
 	touch $@
 
 hurd-vm-image: $(HURD_VM_IMG)
@@ -557,12 +561,19 @@ $(HURD_VM_IMG): $(TEST_IMG) scripts/provision_stage.sh scripts/provision_guest.p
         $(BUILD)/gnumach-kernel/gnumach $(BUILD)/hurd-servers/.stamp \
         $(VIRTIO_DIR)/virtio-balloon $(VIRTIO_DIR)/virtio-blk.static \
         $(VIRTIO_NET_DIR)/virtio-net $(VIRTIO_DIR)/virtio-9p \
-        3p/9pfs/9pfs cfg/grub.cfg $(HURD_SOURCES)
+        $(BUILD)/hurd/storeio/storeio.static \
+        3p/9pfs/9pfs cfg/grub.cfg cfg/network/interfaces $(HURD_SOURCES)
 	rm -rf $(HURD_OVERLAY_DIR)
 	$(MKDIR_P) $(HURD_OVERLAY_DIR)/hurd
 	# Hurd servers/translators from the out-of-tree build tree.
 	# Prefer <target>.static when it exists (matches storeio.static).
+	# exec is the exception: cfg/grub.cfg starts it as
+	# "module /lib/ld-x86-64.so.1 exec /hurd/exec", so the dynamic loader
+	# loads it, and ld.so cannot load a static binary.  Shipping
+	# exec.static there leaves the exec task dying silently right after
+	# the bootstrap, before it can announce itself to ext2fs.
 	for s in $(HURD_SERVERS_SUBDIRS); do \
+	    if [ "$$s" = exec ] || [ "$$s" = storeio ]; then continue; fi; \
 	    b=$(BUILD)/hurd-servers/$$s/$$s; \
 	    if [ -f "$$b.static" ]; then \
 	        cp "$$b.static" "$(HURD_OVERLAY_DIR)/hurd/$$s" || exit 1; \
@@ -572,6 +583,11 @@ $(HURD_VM_IMG): $(TEST_IMG) scripts/provision_stage.sh scripts/provision_guest.p
 	    fi; \
 	    chmod 755 "$(HURD_OVERLAY_DIR)/hurd/$$s" || exit 1; \
 	done
+	# The static storeio embeds the patched libstore and the partition
+	# store class.  Replacing Debian's dynamic storeio alone would bind
+	# the image's unpatched libstore and lose the device fallback fix.
+	cp $(BUILD)/hurd/storeio/storeio.static $(HURD_OVERLAY_DIR)/hurd/storeio
+	chmod 755 $(HURD_OVERLAY_DIR)/hurd/storeio
 	# Virtio drivers and 9pfs translator.
 	cp $(VIRTIO_DIR)/virtio-balloon $(HURD_OVERLAY_DIR)/hurd/virtio-balloon
 	cp $(VIRTIO_DIR)/virtio-blk.static $(HURD_OVERLAY_DIR)/hurd/virtio-blk.static
@@ -583,6 +599,30 @@ $(HURD_VM_IMG): $(TEST_IMG) scripts/provision_stage.sh scripts/provision_guest.p
 	    $(HURD_OVERLAY_DIR)/hurd/virtio-net \
 	    $(HURD_OVERLAY_DIR)/hurd/virtio-9p \
 	    $(HURD_OVERLAY_DIR)/hurd/9pfs
+	# The guest may boot either virtio-blk root + virtio-net (MODE=virtio)
+	# or rumpdisk root + e1000 (MODE=rumpdisk).  Publish both network
+	# interfaces so pfinet can bring up whichever one QEMU actually
+	# exposes:
+	#
+	#   - /dev/vnet0 is served by /hurd/virtio-net --serve (published by
+	#     stage_kernel via settrans -cp, scripts/provision_guest.py:777-783).
+	#     QEMU exposes virtio-net-pci in scripts/hurd_vm.sh:boot_virtio
+	#     (addr=0x6).  Works in MODE=virtio.
+	#   - /dev/eth0 is served by devnode -M /dev/net eth0
+	#     (/tmp/mnt-vm/usr/sbin/MAKEDEV:264) and backed by gnumach's
+	#     device master via netdde or a kernel e1000 driver.  QEMU exposes
+	#     e1000 in scripts/hurd_vm.sh:boot_rumpdisk.  Works in
+	#     MODE=rumpdisk.  Fails benignly in MODE=virtio (no kernel eth0),
+	#     just like the pre-existing "virtio-blk: open eth0: unknown
+	#     device" noise; pfinet continues and login still works.
+	#
+	# QEMU exposes exactly one NIC at a time, so only the matching
+	# interface comes up.  netdde is not started at boot in this image, so
+	# there is no netdde/virtio-net conflict here (netdde is only measured
+	# by the harness, not required).
+	$(MKDIR_P) $(HURD_OVERLAY_DIR)/etc/network
+	cp cfg/network/interfaces $(HURD_OVERLAY_DIR)/etc/network/interfaces
+	chmod 644 $(HURD_OVERLAY_DIR)/etc/network/interfaces
 	# GRUB configuration for the guest boot path.
 	$(MKDIR_P) $(HURD_OVERLAY_DIR)/boot/grub
 	gzip -c $(BUILD)/gnumach-kernel/gnumach > $(HURD_OVERLAY_DIR)/boot/gnumach-1.8-hurdkit.gz; \
@@ -593,6 +633,7 @@ $(HURD_VM_IMG): $(TEST_IMG) scripts/provision_stage.sh scripts/provision_guest.p
 		VARIANT="$(abspath $@)" \
 		STAGE_INPUT="$(abspath $(TEST_IMG))" \
 		CUSTOM_OVERLAY="$(abspath $(HURD_OVERLAY_DIR))"
+	bash scripts/fsck_qcow2.sh --check "$@"
 
 # Build the SMP kernel image (-smp 2): gnumach with GNUMACH_NCPUS=2 staged
 # into hurd.kernel.smp.qcow2 on top of the packages image.  Run this before

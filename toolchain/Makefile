@@ -32,7 +32,8 @@ GCC_VER      := 15.3.0
 
 .PHONY: all toolchain toolchain-clean fetch \
 	binutils gcc1 gnumach gnumach-kernel glibc gcc2 \
-	mig hurd hurd-headers libpciaccess libtrivfs libmachdev libirqhelp storeio hurd-servers \
+	mig hurd hurd-headers libpciaccess libtrivfs libmachdev libirqhelp libuuid \
+	hurd-libstore parted storeio hurd-servers \
 	virtio-9p virtio-balloon virtio-blk virtio-net 9pfs verify-vm \
 	clean tooldir 3p-pin glibc-rebuild \
 	virtio-clean
@@ -498,6 +499,124 @@ libmachdev: hurd libtrivfs
 	@echo "=== gate: libmachdev ==="
 	ls $(PREFIX)/lib/libmachdev.a $(PREFIX)/include/hurd/machdev.h >/dev/null
 
+# libstore in the prefix: the Hurd patched parted needs libstore at its
+# configure and link time, and libstore's "part" store class needs parted.
+# The dependency is circular, so it is broken in two passes: this target
+# builds the Hurd tree without parted and installs libnetfs and libstore,
+# which is what the parted configure check looks for; the storeio target
+# then rebuilds the tree with --with-parted.
+hurd-libstore: hurd mig
+	@if [ -f "$(PREFIX)/lib/libstore.a" ]; then \
+	    echo "(skipping: libstore already installed)"; \
+	else \
+	    rm -rf $(BUILD)/hurd-libstore-src $(BUILD)/hurd-libstore && \
+	    cp -a $(REPO_ROOT)/3p/hurd $(BUILD)/hurd-libstore-src && \
+	    cd $(BUILD)/hurd-libstore-src && \
+	    sed -i -e '/^if test "x$$cross_compiling" = "xyes"; then$$/,/^fi$$/d' configure.ac && \
+	    autoreconf -i && \
+	    mkdir -p $(BUILD)/hurd-libstore && cd $(BUILD)/hurd-libstore && \
+	    PATH=$(PREFIX)/bin:$$PATH \
+	    CC=$(PREFIX)/bin/x86_64-gnu-gcc MIG=$(PREFIX)/bin/mig \
+	    CPPFLAGS="-I$(PREFIX)/include" LDFLAGS="-L$(PREFIX)/lib" CPATH=$(PREFIX)/include \
+	    $(BUILD)/hurd-libstore-src/configure \
+	        --host=x86_64-gnu --build=x86_64-pc-linux-gnu --prefix=$(PREFIX) \
+	        --without-parted --without-libtirpc --without-libdaemon \
+	        --without-rump --without-acpica --without-libcrypt --disable-profile && \
+	    hurd_version=$$(sed -n 's/^package-version := //p' config.make); \
+	    sed -e "s/MASTER_HURD_VERSION/\"$$hurd_version\"/" \
+	        < $(BUILD)/hurd-libstore-src/version.h.in > $(BUILD)/hurd-libstore/version.h && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libshouldbeinlibc -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libihash -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libiohelp -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libports -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libpager -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libfshelp -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libnetfs -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libstore -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libnetfs install && \
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libstore install && \
+	    rm -rf $(BUILD)/hurd-libstore-src $(BUILD)/hurd-libstore; \
+	fi
+	@echo "=== gate: libstore ==="
+	ls $(PREFIX)/lib/libstore.a $(PREFIX)/lib/libstore.so.0.3 >/dev/null
+
+# libuuid is required by libparted, which the Hurd's libstore needs for its
+# "part" store class (the partition device nodes /dev/wd0sN).  The cross
+# prefix has no util-linux, so the minimal implementation in
+# toolchain/libuuid (the subset libparted uses) is built here.  The shared
+# library carries the libuuid.so.1 soname, so a dynamically linked storeio
+# picks up the system's libuuid at run time.
+libuuid:
+	@if [ -f "$(PREFIX)/lib/libuuid.a" ]; then \
+	    echo "(skipping: libuuid already installed)"; \
+	else \
+	    rm -rf $(BUILD)/libuuid && mkdir -p $(BUILD)/libuuid && \
+	    $(PREFIX)/bin/x86_64-gnu-gcc -O2 -g -Wall -fPIC \
+	        -I$(REPO_ROOT)/toolchain/libuuid \
+	        -c $(REPO_ROOT)/toolchain/libuuid/uuid.c \
+	        -o $(BUILD)/libuuid/uuid.o && \
+	    $(PREFIX)/bin/x86_64-gnu-ar rcs $(BUILD)/libuuid/libuuid.a $(BUILD)/libuuid/uuid.o && \
+	    $(PREFIX)/bin/x86_64-gnu-gcc -shared -Wl,-soname,libuuid.so.1 \
+	        -o $(BUILD)/libuuid/libuuid.so.1.0.0 $(BUILD)/libuuid/uuid.o && \
+	    mkdir -p $(PREFIX)/lib $(PREFIX)/include/uuid && \
+	    cp $(BUILD)/libuuid/libuuid.a $(BUILD)/libuuid/libuuid.so.1.0.0 $(PREFIX)/lib/ && \
+	    ln -sf libuuid.so.1.0.0 $(PREFIX)/lib/libuuid.so.1 && \
+	    ln -sf libuuid.so.1 $(PREFIX)/lib/libuuid.so && \
+	    cp $(REPO_ROOT)/toolchain/libuuid/uuid/uuid.h $(PREFIX)/include/uuid/ && \
+	    rm -rf $(BUILD)/libuuid; \
+	fi
+	@echo "=== gate: libuuid ==="
+	ls $(PREFIX)/lib/libuuid.a $(PREFIX)/include/uuid/uuid.h >/dev/null
+
+# libparted comes from 3p/parted, the Hurd patched parted: it provides
+# ped_device_new_from_store, which libstore/part.c needs to build a
+# partition store on top of a device store.  Only the library is built;
+# the parted program is not needed.  device-mapper support is off (the
+# cross prefix has no libdevmapper) and readline support is off (it would
+# pull in a cross termcap).  parted 3.8 predates gcc 14, so the build
+# uses gnu17 and turns the diagnostics that became errors into warnings.
+# nilfs2.c uses offsetof without including stddef.h, so add that standard
+# header to the copied source instead of relying on a transitive include.
+# The tree is copied out first: it ships no configure script, so it has to
+# be bootstrapped, and the checkout stays untouched.  A plain clone leaves
+# the gnulib submodule uninitialized; use its HTTPS mirror because the
+# recorded git:// URL is not usable in every build environment.
+parted: libuuid hurd-libstore
+	@if [ -f "$(PREFIX)/lib/libparted.a" ]; then \
+	    echo "(skipping: libparted already installed)"; \
+	else \
+	    rm -rf $(BUILD)/parted-src $(BUILD)/parted && \
+	    cp -a $(REPO_ROOT)/3p/parted $(BUILD)/parted-src && \
+	    sed -i '/#include <config.h>/a #include <stddef.h>' \
+	        $(BUILD)/parted-src/libparted/fs/nilfs2/nilfs2.c && \
+	    git -C $(BUILD)/parted-src config submodule.gnulib.url \
+	        https://github.com/coreutils/gnulib.git && \
+	    git -C $(BUILD)/parted-src submodule update --init --recursive && \
+	    cd $(BUILD)/parted-src && \
+	    ./bootstrap && \
+	    mkdir -p $(BUILD)/parted && cd $(BUILD)/parted && \
+	    PATH=$(PREFIX)/bin:$$PATH \
+	    CC=$(PREFIX)/bin/x86_64-gnu-gcc \
+	    CFLAGS="-O2 -g -std=gnu17 -fcommon -Wno-implicit-function-declaration \
+	        -Wno-int-conversion -Wno-incompatible-pointer-types" \
+	    LDFLAGS="-L$(PREFIX)/lib" \
+	    $(BUILD)/parted-src/configure \
+	        --host=x86_64-gnu --build=x86_64-pc-linux-gnu --prefix=$(PREFIX) \
+	        --disable-device-mapper --without-readline --disable-nls \
+	        --disable-gcc-warnings --enable-shared --enable-static && \
+	    PATH=$(PREFIX)/bin:$$PATH make -C include/parted -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH make -C lib -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH make -C libparted -j$(NPROC) && \
+	    PATH=$(PREFIX)/bin:$$PATH make -C include/parted install && \
+	    PATH=$(PREFIX)/bin:$$PATH make -C libparted install && \
+	    rm -rf $(BUILD)/parted-src $(BUILD)/parted; \
+	fi
+	@echo "=== gate: libparted ==="
+	ls $(PREFIX)/lib/libparted.a $(PREFIX)/include/parted/parted.h >/dev/null
+	$(PREFIX)/bin/x86_64-gnu-nm $(PREFIX)/lib/libparted.a | \
+	    grep -q ped_device_new_from_store && \
+	    echo "gate: libparted carries the Hurd store extension"
+
 # storeio is not installed to the prefix by the `hurd` stage, so it has its
 # own target. It builds inside a configured out-of-tree Hurd tree (a
 # standalone `make -C 3p/hurd/storeio` fails: generated headers such as
@@ -507,9 +626,15 @@ libmachdev: hurd libtrivfs
 #   libfshelp -> libnetfs -> libstore -> libhurdbugaddr -> storeio.
 # The hurdkit-branch fix (commit e07e9590) fixes the --no-cache byte-to-block
 # conversion (<< instead of >>) in storeio/dev.c.
-storeio: hurd mig
+# The tree is configured --with-parted, so libstore has the "part" store
+# class and storeio can serve the partition device nodes (/dev/wd0sN) that
+# the boot-time fsck opens.  Both a dynamic and a static storeio are built:
+# the static one is self-contained (its libstore carries the local device
+# class fix) and is what the vm image ships.
+storeio: hurd mig parted
 	rm -rf $(BUILD)/hurd-src $(BUILD)/hurd && \
 	cp -a $(REPO_ROOT)/3p/hurd $(BUILD)/hurd-src && \
+	find $(BUILD)/hurd-src \( -name '*.a' -o -name '*.o' \) -delete && \
 	cd $(BUILD)/hurd-src && \
 	sed -i -e '/^if test "x$$cross_compiling" = "xyes"; then$$/,/^fi$$/d' configure.ac && \
 	autoreconf -i && \
@@ -519,9 +644,10 @@ storeio: hurd mig
 	    CPPFLAGS="-I$(PREFIX)/include" LDFLAGS="-L$(PREFIX)/lib" CPATH=$(PREFIX)/include \
 	    $(BUILD)/hurd-src/configure \
 	        --host=x86_64-gnu --build=x86_64-pc-linux-gnu --prefix=$(PREFIX) \
-	        --without-parted --without-libtirpc --without-libdaemon \
+	        --with-parted --without-libtirpc --without-libdaemon \
 	        --without-rump --without-acpica --without-libcrypt --disable-profile && \
-	    sed -e 's/MASTER_HURD_VERSION/"$(shell sed -n "s/^package-version := //p" $(BUILD)/hurd/config.make)"/' \
+	    hurd_version=$$(sed -n 's/^package-version := //p' config.make); \
+	    sed -e "s/MASTER_HURD_VERSION/\"$$hurd_version\"/" \
 	        < $(BUILD)/hurd-src/version.h.in > $(BUILD)/hurd/version.h && \
 	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libshouldbeinlibc -j$(NPROC) && \
 	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libihash -j$(NPROC) && \
@@ -532,10 +658,14 @@ storeio: hurd mig
 	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libnetfs -j$(NPROC) && \
 	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libstore -j$(NPROC) && \
 	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libhurdbugaddr -j$(NPROC) && \
-	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C storeio storeio.static
+	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C storeio storeio storeio.static \
+	        LDLIBS="-lpthread -lhurduser -lmachuser -lparted -luuid -ldl"
 	@echo "=== gate: storeio ==="
 	file $(BUILD)/hurd/storeio/storeio.static
 	file $(BUILD)/hurd/storeio/storeio.static | grep -q 'for GNU/Hurd' || { echo "storeio: binary is not a GNU/Hurd ELF" >&2; exit 1; }
+	$(PREFIX)/bin/x86_64-gnu-nm $(BUILD)/hurd/storeio/storeio.static | \
+	    grep -q ped_device_probe_all && \
+	    echo "gate: storeio carries the parted partition store"
 
 # hurd-servers builds the Hurd servers and translators out of a copy of
 # 3p/hurd, without installing to the prefix (installationdir is absolute,

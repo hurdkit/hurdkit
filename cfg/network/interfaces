@@ -1,0 +1,22 @@
+# This file describes the network interfaces available on your system
+# and how to activate them. For more information, see interfaces(5).
+
+# The loopback network interface
+auto lo
+iface lo inet loopback
+
+# Primary interface for virtio-net (MODE=virtio).  /dev/vnet0 is served by
+# /hurd/virtio-net --serve, published by stage_kernel via
+# settrans -cp /dev/vnet0 /hurd/virtio-net --serve
+# (scripts/provision_guest.py:stage_kernel).  QEMU exposes virtio-net-pci in
+# scripts/hurd_vm.sh:boot_virtio (addr=0x6).  virtio-net --serve accepts any
+# device_open name by default (virtio-net.c:70-72), so opening /dev/vnet0
+# works regardless of the name pfinet passes through.
+#
+# NOTE: /dev/eth0 is deliberately NOT configured here.  In virtio mode,
+# configuring both /dev/vnet0 and /dev/eth0 causes ifup to bring up vnet0
+# first (succeeds), then attempt eth0 via fsysopts on pfinet's socket, which
+# crashes pfinet ("(ipc/mig) server died") and breaks SSH.  Rumpdisk mode
+# gets its own interfaces file injected by scripts/hurd_vm.sh.
+auto /dev/vnet0
+iface /dev/vnet0 inet dhcp

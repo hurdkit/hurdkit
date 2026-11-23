@@ -70,7 +70,53 @@ if [[ "$REUSE" != "1" ]]; then
     qemu-img create -f qcow2 -b "$(readlink -f "$BASE_IMG")" -F qcow2 \
         "$TMPIMG" >/dev/null
     echo "hurd_vm: created temp image $TMPIMG -> $BASE_IMG"
+    # The snapshot is throwaway, so repair it before boot instead of
+    # letting the guest trip over the stale bitmaps of a previous run.
+    bash "$SCRIPT_DIR/scripts/fsck_qcow2.sh" --repair "$TMPIMG"
 fi
+
+# ---------------------------------------------------------------------------
+# Inject the correct /etc/network/interfaces for the boot mode.
+# The overlay image is shared between virtio and rumpdisk modes, but each
+# mode needs a different primary network interface:
+#   - virtio: /dev/vnet0 (served by /hurd/virtio-net --serve)
+#   - rumpdisk: /dev/eth0 (served by devnode via gnumach device master)
+# Configuring both causes ifup to bring up the first one successfully, then
+# crash pfinet when trying to add the second one via fsysopts
+# ("(ipc/mig) server died"), breaking SSH.
+# ---------------------------------------------------------------------------
+inject_interfaces() {
+    local mnt
+    case "$MODE" in
+        virtio)
+            # cfg/network/interfaces already ships only /dev/vnet0; nothing to do.
+            return 0
+            ;;
+        rumpdisk)
+            mnt="$(mktemp -d)"
+            echo "hurd_vm: injecting /etc/network/interfaces for rumpdisk mode (/dev/eth0)..."
+            bash "$SCRIPT_DIR/scripts/mount_image.sh" "$TMPIMG" "$mnt" 2 >/dev/null
+            cat > "$mnt/etc/network/interfaces" <<'EOF'
+# This file describes the network interfaces available on your system
+# and how to activate them. For more information, see interfaces(5).
+
+# The loopback network interface
+auto lo
+iface lo inet loopback
+
+# Primary interface for e1000/rumpdisk (MODE=rumpdisk).  /dev/eth0 is served
+# by devnode -M /dev/net eth0 backed by gnumach's device master via netdde
+# or a kernel e1000 driver.  QEMU exposes e1000 in scripts/hurd_vm.sh:boot_rumpdisk.
+auto /dev/eth0
+iface /dev/eth0 inet dhcp
+EOF
+            bash "$SCRIPT_DIR/scripts/unmount_image.sh" "$mnt"
+            rmdir "$mnt" 2>/dev/null || true
+            ;;
+    esac
+}
+
+inject_interfaces
 
 boot_virtio() {
     echo "hurd_vm: virtio mode: virtio-blk root + virtio-net (SSH on $SSH_HOST:$SSH_PORT)..."

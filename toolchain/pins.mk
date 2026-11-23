@@ -9,6 +9,7 @@
 	gnumach:https://github.com/hurdkit/gnumach.git \
 	glibc:https://sourceware.org/git/glibc.git \
 	hurd:https://github.com/hurdkit/hurd.git \
+	parted:https://git.savannah.gnu.org/git/parted.git \
 	9pfs:https://github.com/bugaevc/9pfs.git \
 	libpciaccess:https://gitlab.freedesktop.org/xorg/lib/libpciaccess.git
 
@@ -22,6 +23,7 @@
 	glibc:03628c2f85acaab6ef71c37c954fd0707685e0f0 \
 	gnumach:@hurdkit \
 	hurd:@hurdkit \
+	parted:35909e6ae55fdfbde03c449a0ca170dda6bbbd3b \
 	9pfs:b5b23deb1df6eb383fd2c0f5271c068861b745a8 \
 	libpciaccess:e33aa5fd28f63b9842e36c1a8a954577eec042e3
 
