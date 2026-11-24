@@ -583,9 +583,10 @@ $(HURD_VM_IMG): $(TEST_IMG) scripts/provision_stage.sh scripts/provision_guest.p
 	    fi; \
 	    chmod 755 "$(HURD_OVERLAY_DIR)/hurd/$$s" || exit 1; \
 	done
-	# The static storeio embeds the patched libstore and the partition
-	# store class.  Replacing Debian's dynamic storeio alone would bind
-	# the image's unpatched libstore and lose the device fallback fix.
+	# The static storeio embeds the patched libstore, the partition store
+	# class and every selectable store class (zero for /dev/zero, ...).
+	# Replacing Debian's dynamic storeio alone would bind the image's
+	# unpatched libstore and lose the device fallback fix.
 	cp $(BUILD)/hurd/storeio/storeio.static $(HURD_OVERLAY_DIR)/hurd/storeio
 	chmod 755 $(HURD_OVERLAY_DIR)/hurd/storeio
 	# ext2fs.static is published under its own name so the guest can start

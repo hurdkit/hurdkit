@@ -631,6 +631,17 @@ parted: libuuid hurd-libstore
 # the boot-time fsck opens.  Both a dynamic and a static storeio are built:
 # the static one is self-contained (its libstore carries the local device
 # class fix) and is what the vm image ships.
+#
+# The store classes that the static storeio carries.  A statically linked
+# storeio only contains the classes whose objects the link pulls in, and the
+# Hurd build's default set ("boot-store-types") is the minimal subset a boot
+# filesystem needs: device, remap and part.  The vm image installs this
+# binary as the system /hurd/storeio, which serves every device node, so it
+# needs the full set of selectable classes: without "zero" the image's
+# /dev/zero (storeio -Tzero) fails with "Invalid argument to --store-type"
+# and the translator dies.  gunzip and bunzip2 stay out: the cross prefix
+# has no libz/libbz2, and no device node uses them.
+STOREIO_STORE_TYPES := device remap part file zero task copy nbd
 storeio: hurd mig parted
 	rm -rf $(BUILD)/hurd-src $(BUILD)/hurd && \
 	cp -a $(REPO_ROOT)/3p/hurd $(BUILD)/hurd-src && \
@@ -659,13 +670,17 @@ storeio: hurd mig parted
 	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libstore -j$(NPROC) && \
 	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C libhurdbugaddr -j$(NPROC) && \
 	    PATH=$(PREFIX)/bin:$$PATH CFLAGS="$(CFLAGS)" make -C storeio storeio storeio.static \
-	        LDLIBS="-lpthread -lhurduser -lmachuser -lparted -luuid -ldl"
+	        LDLIBS="-lpthread -lhurduser -lmachuser -lparted -luuid -ldl" \
+	        boot-store-types="$(STOREIO_STORE_TYPES)"
 	@echo "=== gate: storeio ==="
 	file $(BUILD)/hurd/storeio/storeio.static
 	file $(BUILD)/hurd/storeio/storeio.static | grep -q 'for GNU/Hurd' || { echo "storeio: binary is not a GNU/Hurd ELF" >&2; exit 1; }
 	$(PREFIX)/bin/x86_64-gnu-nm $(BUILD)/hurd/storeio/storeio.static | \
 	    grep -q ped_device_probe_all && \
 	    echo "gate: storeio carries the parted partition store"
+	$(PREFIX)/bin/x86_64-gnu-nm $(BUILD)/hurd/storeio/storeio.static | \
+	    grep -q ' store_zero_class$$' && \
+	    echo "gate: storeio carries the zero store class"
 
 # hurd-servers builds the Hurd servers and translators out of a copy of
 # 3p/hurd, without installing to the prefix (installationdir is absolute,
