@@ -37,7 +37,7 @@ CPU_COUNT     := 4
 SSH_PORT      ?= 2222
 SSH_HOST      ?= 127.0.0.1
 REUSE         ?= 0
-ROOT_PASSWORD := abcdef
+ROOT_PASSWORD := hurdkit
 # The in-VM package upgrade is off by default: the sid archive ships a
 # hurd-dev that cannot be unpacked on Hurd. Set it to 1 to run
 # "apt-get update" and "apt-get upgrade" during the provisioning.

@@ -933,7 +933,7 @@ Check the SSH login from the host (no `sshpass` on this machine, so use
 python3 -c 'import pexpect; c = pexpect.spawn("ssh", ["-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null", "-o", "PreferredAuthentications=password",
     "-o", "PubkeyAuthentication=no", "-p", "2222", "root@127.0.0.1", "id"], encoding="utf-8");
-    c.expect("password:"); c.sendline("abcdef"); c.expect(pexpect.EOF); print(c.before)'
+    c.expect("password:"); c.sendline("hurdkit"); c.expect(pexpect.EOF); print(c.before)'
 ```
 
 Check the login with the keys (the guest has to be running):

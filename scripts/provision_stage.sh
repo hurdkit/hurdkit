@@ -43,7 +43,7 @@ IN_IMG="${2:?Usage: $0 <stage> <in.qcow2> <out.qcow2> [ssh_port]}"
 OUT_IMG="${3:?Usage: $0 <stage> <in.qcow2> <out.qcow2> [ssh_port]}"
 SSH_PORT="${4:-2222}"
 SSH_HOST="127.0.0.1"
-ROOT_PASSWORD="${ROOT_PASSWORD:-abcdef}"
+ROOT_PASSWORD="${ROOT_PASSWORD:-hurdkit}"
 # The same resources as the guests booted from the resulting image.
 CPU_COUNT="${CPU_COUNT:-4}"
 MEMORY="${MEMORY:-2G}"

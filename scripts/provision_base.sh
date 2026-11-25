@@ -29,7 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_IMG="${1:?Usage: $0 <base.qcow2> [ssh_port]}"
 SSH_PORT="${2:-2222}"
 SSH_HOST="127.0.0.1"
-ROOT_PASSWORD="${ROOT_PASSWORD:-abcdef}"
+ROOT_PASSWORD="${ROOT_PASSWORD:-hurdkit}"
 # The CPU count and the memory size are configurable so that the guest
 # used for the provisioning runs with the same resources as the guest that
 # is booted from the resulting image.

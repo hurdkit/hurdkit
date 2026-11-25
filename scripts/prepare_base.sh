@@ -21,7 +21,7 @@ set -euo pipefail
 
 SRC_IMG="${1:?Usage: $0 <source.raw> <work.raw> [root_password]}"
 WORK_IMG="${2:?Usage: $0 <source.raw> <work.raw> [root_password]}"
-ROOT_PASSWORD="${3:-abcdef}"
+ROOT_PASSWORD="${3:-hurdkit}"
 # The root filesystem is this partition of the disk image.
 ROOT_PARTITION=2
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
